@@ -1,0 +1,26 @@
+# Binaries
+bin/
+/agentbox
+*.exe
+
+# Test coverage
+coverage.out
+coverage.html
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Build
+dist/
+
+# Local testing
+test-project/
+*.local
