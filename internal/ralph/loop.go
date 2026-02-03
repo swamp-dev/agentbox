@@ -19,7 +19,7 @@ import (
 // randomSuffix generates a random hex string for unique container names.
 func randomSuffix() string {
 	b := make([]byte, 4)
-	rand.Read(b)
+	_, _ = rand.Read(b)
 	return hex.EncodeToString(b)
 }
 
@@ -120,25 +120,25 @@ func (l *Loop) runIteration(ctx context.Context) error {
 	if err := l.prd.MarkTaskInProgress(task.ID); err != nil {
 		return err
 	}
-	l.progress.RecordStart(task.ID, task.Title)
+	_ = l.progress.RecordStart(task.ID, task.Title)
 
 	prompt := l.buildPrompt(task)
 
 	output, err := l.runAgent(ctx, prompt)
 	if err != nil {
-		l.progress.RecordFailed(task.ID, task.Title, err.Error())
+		_ = l.progress.RecordFailed(task.ID, task.Title, err.Error())
 		return fmt.Errorf("agent execution failed: %w", err)
 	}
 
 	result := l.agent.ParseOutput(output)
 
 	if !result.Success {
-		l.progress.RecordFailed(task.ID, task.Title, result.Message)
+		_ = l.progress.RecordFailed(task.ID, task.Title, result.Message)
 		return fmt.Errorf("agent reported failure: %s", result.Message)
 	}
 
 	if err := l.runQualityChecks(ctx); err != nil {
-		l.progress.RecordFailed(task.ID, task.Title, fmt.Sprintf("quality check failed: %s", err))
+		_ = l.progress.RecordFailed(task.ID, task.Title, fmt.Sprintf("quality check failed: %s", err))
 		return fmt.Errorf("quality checks failed: %w", err)
 	}
 
@@ -157,7 +157,7 @@ func (l *Loop) runIteration(ctx context.Context) error {
 		return fmt.Errorf("saving PRD: %w", err)
 	}
 
-	l.progress.RecordComplete(task.ID, task.Title, "Task completed successfully", learnings)
+	_ = l.progress.RecordComplete(task.ID, task.Title, "Task completed successfully", learnings)
 
 	l.logger.Info("iteration completed",
 		"iteration", l.iteration,
