@@ -9,6 +9,12 @@ Docker-sandboxed AI coding agent CLI with Ralph loop support.
 - **Multi-Agent Support**: Plugin architecture for different AI agents
 - **Security First**: Network isolation by default, controlled API access
 
+## Prerequisites
+
+- **Docker** — must be installed and running
+- **Go 1.24.0+** — required to build from source
+- **API keys** — see [Environment Variables](#environment-variables) for your agent
+
 ## Installation
 
 ```bash
@@ -48,6 +54,8 @@ agentbox status
 | `images` | Manage base Docker images |
 | `version` | Print version information |
 
+See [docs/cli-reference.md](docs/cli-reference.md) for complete flag reference.
+
 ## Configuration
 
 Create `agentbox.yaml` in your project root:
@@ -81,6 +89,8 @@ ralph:
 ```
 
 ## Ralph Pattern
+
+> See [docs/prd-guide.md](docs/prd-guide.md) for the PRD schema reference and guide for writing effective PRDs.
 
 The Ralph pattern enables iterative AI agent execution with memory persistence:
 
@@ -152,6 +162,14 @@ make fmt
 # Run linters
 make lint
 ```
+
+## Documentation
+
+- [CLI Reference](docs/cli-reference.md) — Complete flag reference for all commands
+- [PRD Guide](docs/prd-guide.md) — PRD schema and guide for writing effective task definitions
+- [Troubleshooting](docs/troubleshooting.md) — Solutions for common issues
+- [Contributing](CONTRIBUTING.md) — Development setup and contributor guide
+- [Security](SECURITY.md) — Security model and policies
 
 ## License
 
