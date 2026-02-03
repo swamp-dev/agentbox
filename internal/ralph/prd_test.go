@@ -30,7 +30,7 @@ func TestPRDNextTask(t *testing.T) {
 		t.Errorf("expected first task, got %s", next.ID)
 	}
 
-	prd.MarkTaskComplete("task-1", "done")
+	_ = prd.MarkTaskComplete("task-1", "done")
 	next = prd.NextTask()
 	if next == nil {
 		t.Fatal("expected a next task")
@@ -55,7 +55,7 @@ func TestPRDBlockedTask(t *testing.T) {
 		t.Errorf("expected task-1, got %s", next.ID)
 	}
 
-	prd.MarkTaskComplete("task-1", "")
+	_ = prd.MarkTaskComplete("task-1", "")
 	next = prd.NextTask()
 	if next.ID != "task-2" {
 		t.Errorf("expected task-2 after unblocking, got %s", next.ID)
@@ -75,7 +75,7 @@ func TestPRDIsComplete(t *testing.T) {
 		t.Error("expected not complete")
 	}
 
-	prd.MarkTaskComplete("task-1", "")
+	_ = prd.MarkTaskComplete("task-1", "")
 	if !prd.IsComplete() {
 		t.Error("expected complete")
 	}
@@ -102,7 +102,7 @@ func TestPRDSaveAndLoad(t *testing.T) {
 	path := filepath.Join(dir, "prd.json")
 
 	prd := CreateDefaultPRD("test-project")
-	prd.MarkTaskComplete("task-1", "learned something")
+	_ = prd.MarkTaskComplete("task-1", "learned something")
 
 	if err := prd.Save(path); err != nil {
 		t.Fatalf("Save() error = %v", err)

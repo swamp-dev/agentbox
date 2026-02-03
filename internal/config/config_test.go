@@ -127,7 +127,7 @@ func TestFindConfigFile(t *testing.T) {
 	}
 
 	origDir, _ := os.Getwd()
-	defer os.Chdir(origDir)
+	defer func() { _ = os.Chdir(origDir) }()
 
 	if err := os.Chdir(subdir); err != nil {
 		t.Fatal(err)

@@ -149,7 +149,7 @@ func (m *Manager) Run(ctx context.Context, cfg *ContainerConfig) (string, error)
 	if err != nil {
 		return "", err
 	}
-	defer m.Remove(ctx, containerID)
+	defer func() { _ = m.Remove(ctx, containerID) }()
 
 	return m.Wait(ctx, containerID)
 }
@@ -206,7 +206,7 @@ func (m *Manager) Attach(ctx context.Context, containerID string) error {
 	defer resp.Close()
 
 	go func() {
-		io.Copy(os.Stdout, resp.Reader)
+		_, _ = io.Copy(os.Stdout, resp.Reader)
 	}()
 
 	_, err = io.Copy(resp.Conn, os.Stdin)

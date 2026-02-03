@@ -111,7 +111,7 @@ func runRun(cmd *cobra.Command, args []string) error {
 		if err != nil {
 			return fmt.Errorf("creating container: %w", err)
 		}
-		defer cm.Remove(context.Background(), containerID)
+		defer func() { _ = cm.Remove(context.Background(), containerID) }()
 
 		logger.Info("attaching to container", "id", containerID[:12])
 		return cm.Attach(ctx, containerID)

@@ -265,8 +265,8 @@ func TestGetEntries(t *testing.T) {
 		t.Error("expected empty entries initially")
 	}
 
-	p.RecordStart("task-1", "First")
-	p.RecordComplete("task-2", "Second", "done", nil)
+	_ = p.RecordStart("task-1", "First")
+	_ = p.RecordComplete("task-2", "Second", "done", nil)
 
 	entries := p.GetEntries()
 	if len(entries) != 2 {
@@ -279,9 +279,9 @@ func TestSummary(t *testing.T) {
 	path := filepath.Join(dir, "progress.txt")
 
 	p := NewProgress(path)
-	p.RecordStart("task-1", "First")
-	p.RecordComplete("task-2", "Second", "done", nil)
-	p.RecordFailed("task-3", "Third", "error")
+	_ = p.RecordStart("task-1", "First")
+	_ = p.RecordComplete("task-2", "Second", "done", nil)
+	_ = p.RecordFailed("task-3", "Third", "error")
 
 	summary := p.Summary()
 	if summary != "Tasks: 1 started, 1 completed, 1 failed" {
@@ -328,8 +328,8 @@ func TestLoadAfterAppend(t *testing.T) {
 
 	// Write entries
 	p1 := NewProgress(path)
-	p1.RecordStart("task-1", "First Task")
-	p1.RecordComplete("task-2", "Second Task", "done", []string{"a learning"})
+	_ = p1.RecordStart("task-1", "First Task")
+	_ = p1.RecordComplete("task-2", "Second Task", "done", []string{"a learning"})
 
 	// Load in a new instance
 	p2 := NewProgress(path)

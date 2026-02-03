@@ -159,7 +159,7 @@ func runImagesPull(cmd *cobra.Command, args []string) error {
 			continue
 		}
 
-		io.Copy(os.Stdout, reader)
+		_, _ = io.Copy(os.Stdout, reader)
 		reader.Close()
 		fmt.Println()
 	}
