@@ -41,7 +41,18 @@ Within the mounted project directory, agents can:
 
 ### Quality Check Commands
 
-Quality check commands in `agentbox.yaml` are validated against a whitelist of known-safe build tools (npm, go, cargo, python, etc.). Arbitrary shell commands are rejected.
+Quality check commands in `agentbox.yaml` are validated against an allowlist. Only the base command name (first word) is checked. The following commands are allowed:
+
+**JavaScript/TypeScript:** `npm`, `npx`, `pnpm`, `yarn`, `bun`
+**Go:** `go`
+**Rust:** `cargo`, `rustc`
+**Python:** `python`, `python3`, `pytest`, `pip`
+**Build tools:** `make`, `gradle`, `mvn`
+**Linters/Test runners:** `eslint`, `prettier`, `tsc`, `jest`, `vitest`, `mocha`
+
+For example, `npm test` and `go build ./...` are accepted, but `bash scripts/check.sh` or `curl localhost` are rejected. To run custom scripts, wrap them in a `make` target or `npm` script.
+
+See [docs/troubleshooting.md](docs/troubleshooting.md#quality-check-allowlist) for workarounds and more examples.
 
 ## Known Limitations
 
