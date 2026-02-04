@@ -38,7 +38,7 @@ Examples:
 }
 
 func init() {
-	runCmd.Flags().StringVarP(&runAgent, "agent", "a", "claude", "agent to use (claude, amp, aider)")
+	runCmd.Flags().StringVarP(&runAgent, "agent", "a", "claude", "agent to use (claude, claude-cli, amp, aider)")
 	runCmd.Flags().StringVarP(&runProject, "project", "p", ".", "project directory to mount")
 	runCmd.Flags().StringVar(&runPrompt, "prompt", "", "prompt to send to the agent")
 	runCmd.Flags().StringVar(&runNetwork, "network", "none", "network mode (none, bridge, host)")
@@ -63,6 +63,12 @@ func runRun(cmd *cobra.Command, args []string) error {
 		cfg.Docker.Network = "bridge"
 	} else {
 		cfg.Docker.Network = runNetwork
+	}
+
+	// claude-cli requires network access for subscription auth
+	if runAgent == "claude-cli" && cfg.Docker.Network == "none" {
+		logger.Info("claude-cli requires network access, overriding network to bridge")
+		cfg.Docker.Network = "bridge"
 	}
 
 	if err := cfg.Validate(); err != nil {

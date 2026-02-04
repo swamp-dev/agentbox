@@ -67,6 +67,11 @@ func TestValidate(t *testing.T) {
 			modify:  func(c *Config) { c.Agent.Name = "aider" },
 			wantErr: false,
 		},
+		{
+			name:    "valid claude-cli agent",
+			modify:  func(c *Config) { c.Agent.Name = "claude-cli" },
+			wantErr: false,
+		},
 	}
 
 	for _, tt := range tests {

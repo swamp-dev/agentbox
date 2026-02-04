@@ -1,6 +1,8 @@
 package agent
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -11,6 +13,7 @@ func TestNewAgent(t *testing.T) {
 		wantErr bool
 	}{
 		{"claude", false},
+		{"claude-cli", false},
 		{"amp", false},
 		{"aider", false},
 		{"invalid", true},
@@ -219,6 +222,12 @@ func TestGetAPIKey(t *testing.T) {
 			expected: "",
 		},
 		{
+			name:     "claude-cli returns empty",
+			agent:    "claude-cli",
+			envVars:  map[string]string{},
+			expected: "",
+		},
+		{
 			name:     "unknown agent",
 			agent:    "unknown",
 			envVars:  map[string]string{},
@@ -423,6 +432,7 @@ func TestStopSignal(t *testing.T) {
 		expected string
 	}{
 		{"claude", NewClaudeAgent(), "<promise>COMPLETE</promise>"},
+		{"claude-cli", NewClaudeCLIAgent(), "<promise>COMPLETE</promise>"},
 		{"amp", NewAmpAgent(), "<promise>COMPLETE</promise>"},
 		{"aider", NewAiderAgent(), "<promise>COMPLETE</promise>"},
 	}
@@ -563,5 +573,127 @@ func TestAiderAgentCommandWithPrompt(t *testing.T) {
 	}
 	if !hasNoGit {
 		t.Error("expected --no-git flag in aider command")
+	}
+}
+
+func TestClaudeCLIAgentName(t *testing.T) {
+	ag := NewClaudeCLIAgent()
+	if ag.Name() != "claude-cli" {
+		t.Errorf("expected name claude-cli, got %s", ag.Name())
+	}
+}
+
+func TestClaudeCLIAgentCommand(t *testing.T) {
+	ag := NewClaudeCLIAgent()
+
+	cmd := ag.Command("")
+	if len(cmd) < 2 {
+		t.Errorf("expected at least 2 args, got %d", len(cmd))
+	}
+	if cmd[0] != "claude" {
+		t.Errorf("expected claude command, got %s", cmd[0])
+	}
+
+	cmd = ag.Command("test prompt")
+	found := false
+	for i, arg := range cmd {
+		if arg == "-p" && i+1 < len(cmd) && cmd[i+1] == "test prompt" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("expected prompt to be in command args")
+	}
+}
+
+func TestClaudeCLIAgentEnvironment(t *testing.T) {
+	ag := NewClaudeCLIAgent()
+	env := ag.Environment()
+
+	for _, e := range env {
+		if strings.HasPrefix(e, "ANTHROPIC_API_KEY=") {
+			t.Error("claude-cli should not set ANTHROPIC_API_KEY")
+		}
+	}
+
+	foundHome := false
+	for _, e := range env {
+		if e == "HOME=/home/agent" {
+			foundHome = true
+		}
+	}
+	if !foundHome {
+		t.Error("expected HOME=/home/agent in environment")
+	}
+}
+
+func TestClaudeCLIAgentParseOutput(t *testing.T) {
+	ag := NewClaudeCLIAgent()
+
+	tests := []struct {
+		name      string
+		output    string
+		completed bool
+		success   bool
+	}{
+		{
+			name:      "completed task",
+			output:    "Task done <promise>COMPLETE</promise>",
+			completed: true,
+			success:   true,
+		},
+		{
+			name:      "incomplete task",
+			output:    "Still working on it",
+			completed: false,
+			success:   true,
+		},
+		{
+			name:      "error in output",
+			output:    "Error: something went wrong",
+			completed: false,
+			success:   false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := ag.ParseOutput(tt.output)
+			if result.Completed != tt.completed {
+				t.Errorf("Completed = %v, want %v", result.Completed, tt.completed)
+			}
+			if result.Success != tt.success {
+				t.Errorf("Success = %v, want %v", result.Success, tt.success)
+			}
+		})
+	}
+}
+
+func TestValidateAPIKeyClaudeCLI(t *testing.T) {
+	// Test with a valid ~/.claude/ directory using a temp dir
+	tmpHome := t.TempDir()
+	claudeDir := filepath.Join(tmpHome, ".claude")
+	if err := os.MkdirAll(claudeDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("HOME", tmpHome)
+
+	err := ValidateAPIKey("claude-cli")
+	if err != nil {
+		t.Errorf("ValidateAPIKey(claude-cli) with ~/.claude/ dir should not error, got %v", err)
+	}
+
+	// Test with missing ~/.claude/ directory
+	tmpHomeEmpty := t.TempDir()
+	t.Setenv("HOME", tmpHomeEmpty)
+
+	err = ValidateAPIKey("claude-cli")
+	if err == nil {
+		t.Error("ValidateAPIKey(claude-cli) without ~/.claude/ dir should error")
+	}
+	if err != nil && !strings.Contains(err.Error(), "claude login") {
+		t.Errorf("error should mention 'claude login', got %q", err.Error())
 	}
 }

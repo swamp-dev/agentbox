@@ -14,7 +14,7 @@ agentbox run [flags]
 
 | Flag | Short | Type | Default | Description |
 |------|-------|------|---------|-------------|
-| `--agent` | `-a` | `string` | `claude` | Agent to use (`claude`, `amp`, `aider`) |
+| `--agent` | `-a` | `string` | `claude` | Agent to use (`claude`, `claude-cli`, `amp`, `aider`) |
 | `--project` | `-p` | `string` | `.` | Project directory to mount into the container |
 | `--prompt` | | `string` | | Prompt to send to the agent |
 | `--network` | | `string` | `none` | Network mode (`none`, `bridge`, `host`) |
@@ -52,7 +52,7 @@ agentbox ralph [flags]
 
 | Flag | Short | Type | Default | Description |
 |------|-------|------|---------|-------------|
-| `--agent` | `-a` | `string` | `claude` | Agent to use (`claude`, `amp`, `aider`) |
+| `--agent` | `-a` | `string` | `claude` | Agent to use (`claude`, `claude-cli`, `amp`, `aider`) |
 | `--project` | `-p` | `string` | `.` | Project directory |
 | `--max-iterations` | | `int` | `10` | Maximum iterations before stopping |
 | `--prd` | | `string` | `prd.json` | Path to the PRD file |
