@@ -53,6 +53,10 @@ func init() {
 	rootCmd.AddCommand(statusCmd)
 	rootCmd.AddCommand(imagesCmd)
 	rootCmd.AddCommand(versionCmd)
+	rootCmd.AddCommand(sprintCmd)
+	rootCmd.AddCommand(dashboardCmd)
+	rootCmd.AddCommand(retroCmd)
+	rootCmd.AddCommand(journalCmd)
 }
 
 func initConfig() {

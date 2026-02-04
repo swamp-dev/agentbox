@@ -316,6 +316,76 @@ func (l *Loop) extractLearnings(output string) []string {
 	return learnings
 }
 
+// IterationResult captures the outcome of a single task execution.
+type IterationResult struct {
+	TaskID    string
+	Success   bool
+	Output    string
+	Error     string
+	Learnings []string
+	QualityOK bool
+}
+
+// RunSingleTask runs a single iteration for a specific task and prompt.
+// Unlike runIteration, it does NOT stop on failure — it returns structured results.
+func (l *Loop) RunSingleTask(ctx context.Context, task *Task, prompt string) *IterationResult {
+	l.iteration++
+	result := &IterationResult{TaskID: task.ID}
+
+	if err := l.prd.MarkTaskInProgress(task.ID); err != nil {
+		result.Error = err.Error()
+		return result
+	}
+	_ = l.progress.RecordStart(task.ID, task.Title)
+
+	output, err := l.runAgent(ctx, prompt)
+	result.Output = output
+	if err != nil {
+		result.Error = fmt.Sprintf("agent execution failed: %s", err)
+		_ = l.progress.RecordFailed(task.ID, task.Title, result.Error)
+		return result
+	}
+
+	agentResult := l.agent.ParseOutput(output)
+	if !agentResult.Success {
+		result.Error = fmt.Sprintf("agent reported failure: %s", agentResult.Message)
+		_ = l.progress.RecordFailed(task.ID, task.Title, result.Error)
+		return result
+	}
+
+	if err := l.runQualityChecks(ctx); err != nil {
+		result.Error = fmt.Sprintf("quality check failed: %s", err)
+		result.QualityOK = false
+		_ = l.progress.RecordFailed(task.ID, task.Title, result.Error)
+		return result
+	}
+	result.QualityOK = true
+
+	result.Learnings = l.extractLearnings(output)
+	result.Success = true
+
+	if err := l.prd.MarkTaskComplete(task.ID, strings.Join(result.Learnings, "; ")); err != nil {
+		result.Error = err.Error()
+		result.Success = false
+		return result
+	}
+
+	_ = l.prd.Save(l.projectPath + "/" + l.cfg.Ralph.PRDFile)
+	_ = l.progress.RecordComplete(task.ID, task.Title, "Task completed successfully", result.Learnings)
+
+	return result
+}
+
+// GetPRD returns the underlying PRD for external access.
+func (l *Loop) GetPRD() *PRD {
+	return l.prd
+}
+
+// GetIteration returns the current iteration number.
+func (l *Loop) GetIteration() int {
+	return l.iteration
+}
+
 // Status returns the current loop status.
 func (l *Loop) Status() *LoopStatus {
 	return &LoopStatus{

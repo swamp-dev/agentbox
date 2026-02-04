@@ -11,11 +11,26 @@ import (
 
 // Config represents the agentbox.yaml configuration file.
 type Config struct {
-	Version string        `yaml:"version"`
-	Project ProjectConfig `yaml:"project"`
-	Agent   AgentConfig   `yaml:"agent"`
-	Docker  DockerConfig  `yaml:"docker"`
-	Ralph   RalphConfig   `yaml:"ralph"`
+	Version    string           `yaml:"version"`
+	Project    ProjectConfig    `yaml:"project"`
+	Agent      AgentConfig      `yaml:"agent"`
+	Docker     DockerConfig     `yaml:"docker"`
+	Ralph      RalphConfig      `yaml:"ralph"`
+	Supervisor SupervisorConfig `yaml:"supervisor,omitempty"`
+}
+
+// SupervisorConfig controls the autonomous sprint behavior.
+type SupervisorConfig struct {
+	SprintSize          int    `yaml:"sprint_size"`
+	MaxSprints          int    `yaml:"max_sprints"`
+	MaxConsecutiveFails int    `yaml:"max_consecutive_fails"`
+	ReviewAgent         string `yaml:"review_agent"`
+	FallbackAgent       string `yaml:"fallback_agent"`
+	ReviewAfter         string `yaml:"review_after"`
+	BudgetDuration      string `yaml:"budget_duration"`
+	JournalEnabled      bool   `yaml:"journal_enabled"`
+	ReviewEnabled       bool   `yaml:"review_enabled"`
+	EscalationMethod    string `yaml:"escalation_method"`
 }
 
 // ProjectConfig holds project-level settings.

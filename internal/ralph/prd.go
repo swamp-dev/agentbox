@@ -230,6 +230,20 @@ func (p *PRD) GetTask(taskID string) *Task {
 	return find(p.Tasks)
 }
 
+// ExportTasks returns all tasks in a flat list for import into taskdb.
+func (p *PRD) ExportTasks() []Task {
+	var tasks []Task
+	var collect func(list []Task)
+	collect = func(list []Task) {
+		for _, t := range list {
+			tasks = append(tasks, t)
+			collect(t.Subtasks)
+		}
+	}
+	collect(p.Tasks)
+	return tasks
+}
+
 // CreateDefaultPRD creates a sample PRD for initialization.
 func CreateDefaultPRD(projectName string) *PRD {
 	return &PRD{
