@@ -49,8 +49,9 @@ type ContainerConfig struct {
 	Network     string
 	Memory      int64
 	CPUs        float64
-	MountSSH    bool
-	MountGit    bool
+	MountSSH         bool
+	MountGit         bool
+	MountClaudeConfig bool
 }
 
 // ImageName returns the full Docker image name for a given image type.
@@ -81,8 +82,12 @@ func (m *Manager) Create(ctx context.Context, cfg *ContainerConfig) (string, err
 		},
 	}
 
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("determining home directory for mounts: %w", err)
+	}
+
 	if cfg.MountSSH {
-		home, _ := os.UserHomeDir()
 		sshPath := filepath.Join(home, ".ssh")
 		if _, err := os.Stat(sshPath); err == nil {
 			mounts = append(mounts, mount.Mount{
@@ -95,13 +100,24 @@ func (m *Manager) Create(ctx context.Context, cfg *ContainerConfig) (string, err
 	}
 
 	if cfg.MountGit {
-		home, _ := os.UserHomeDir()
 		gitConfig := filepath.Join(home, ".gitconfig")
 		if _, err := os.Stat(gitConfig); err == nil {
 			mounts = append(mounts, mount.Mount{
 				Type:     mount.TypeBind,
 				Source:   gitConfig,
 				Target:   "/home/agent/.gitconfig",
+				ReadOnly: true,
+			})
+		}
+	}
+
+	if cfg.MountClaudeConfig {
+		claudeDir := filepath.Join(home, ".claude")
+		if _, err := os.Stat(claudeDir); err == nil {
+			mounts = append(mounts, mount.Mount{
+				Type:     mount.TypeBind,
+				Source:   claudeDir,
+				Target:   "/home/agent/.claude",
 				ReadOnly: true,
 			})
 		}
@@ -327,7 +343,8 @@ func ConfigToContainerConfig(cfg *config.Config, projectPath string, cmd []strin
 		Network:     cfg.Docker.Network,
 		Memory:      memory,
 		CPUs:        cpus,
-		MountSSH:    true,
-		MountGit:    true,
+		MountSSH:         true,
+		MountGit:         true,
+		MountClaudeConfig: cfg.Agent.Name == "claude-cli",
 	}, nil
 }

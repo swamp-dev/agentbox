@@ -45,7 +45,7 @@ Examples:
 }
 
 func init() {
-	ralphCmd.Flags().StringVarP(&ralphAgent, "agent", "a", "claude", "agent to use (claude, amp, aider)")
+	ralphCmd.Flags().StringVarP(&ralphAgent, "agent", "a", "claude", "agent to use (claude, claude-cli, amp, aider)")
 	ralphCmd.Flags().StringVarP(&ralphProject, "project", "p", ".", "project directory")
 	ralphCmd.Flags().IntVar(&ralphMaxIterations, "max-iterations", 10, "maximum iterations before stopping")
 	ralphCmd.Flags().StringVar(&ralphPRDFile, "prd", "prd.json", "PRD file path")
@@ -66,6 +66,12 @@ func runRalph(cmd *cobra.Command, args []string) error {
 	cfg.Ralph.MaxIterations = ralphMaxIterations
 	cfg.Ralph.PRDFile = ralphPRDFile
 	cfg.Ralph.AutoCommit = ralphAutoCommit
+
+	// claude-cli requires network access for subscription auth
+	if ralphAgent == "claude-cli" && cfg.Docker.Network == "none" {
+		logger.Info("claude-cli requires network access, overriding network to bridge")
+		cfg.Docker.Network = "bridge"
+	}
 
 	if err := cfg.Validate(); err != nil {
 		return fmt.Errorf("invalid configuration: %w", err)

@@ -66,7 +66,7 @@ project:
   name: "my-project"
 
 agent:
-  name: claude  # claude, amp, aider
+  name: claude  # claude, claude-cli, amp, aider
 
 docker:
   image: full   # node, python, go, rust, full
@@ -146,6 +146,7 @@ make docker-build
 | `ANTHROPIC_API_KEY` | claude, aider | Yes for claude |
 | `OPENAI_API_KEY` | aider | Alternative for aider |
 | `AMP_API_KEY` | amp | Yes for amp |
+| *(none)* | claude-cli | Uses Claude subscription auth (`~/.claude/`). Run `claude login` first. |
 
 ## Development
 

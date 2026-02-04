@@ -4,6 +4,7 @@ package agent
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 )
 
@@ -42,6 +43,8 @@ func New(name string) (Agent, error) {
 		return NewAmpAgent(), nil
 	case "aider":
 		return NewAiderAgent(), nil
+	case "claude-cli":
+		return NewClaudeCLIAgent(), nil
 	default:
 		return nil, fmt.Errorf("unknown agent: %s", name)
 	}
@@ -60,13 +63,19 @@ func GetAPIKey(agent string) string {
 			key = os.Getenv("ANTHROPIC_API_KEY")
 		}
 		return key
+	case "claude-cli":
+		return ""
 	default:
 		return ""
 	}
 }
 
-// ValidateAPIKey checks if the required API key is set.
+// ValidateAPIKey checks if the required API key or credentials are available.
 func ValidateAPIKey(agent string) error {
+	if agent == "claude-cli" {
+		return validateClaudeCLICredentials()
+	}
+
 	key := GetAPIKey(agent)
 	if key == "" {
 		switch agent {
@@ -78,5 +87,27 @@ func ValidateAPIKey(agent string) error {
 			return fmt.Errorf("OPENAI_API_KEY or ANTHROPIC_API_KEY environment variable is required for Aider agent")
 		}
 	}
+	return nil
+}
+
+// validateClaudeCLICredentials checks that ~/.claude/ exists for subscription auth.
+func validateClaudeCLICredentials() error {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return fmt.Errorf("cannot determine home directory: %w", err)
+	}
+
+	claudeDir := filepath.Join(home, ".claude")
+	info, err := os.Stat(claudeDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return fmt.Errorf("~/.claude/ directory not found; run 'claude login' first to authenticate with your Claude subscription")
+		}
+		return fmt.Errorf("checking ~/.claude/ directory: %w", err)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("~/.claude exists but is not a directory")
+	}
+
 	return nil
 }

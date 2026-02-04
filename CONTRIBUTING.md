@@ -40,7 +40,7 @@ internal/
     images.go       # agentbox images (list/pull/build)
     version.go      # agentbox version
   config/           # Configuration loading and validation (agentbox.yaml)
-  agent/            # Agent interface and implementations (claude, amp, aider)
+  agent/            # Agent interface and implementations (claude, claude-cli, amp, aider)
   container/        # Docker container lifecycle management
   ralph/            # Ralph loop orchestration, PRD parsing, quality checks
 ```

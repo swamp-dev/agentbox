@@ -26,7 +26,7 @@ type ProjectConfig struct {
 
 // AgentConfig specifies which AI agent to use.
 type AgentConfig struct {
-	Name string `yaml:"name"` // claude, amp, aider
+	Name string `yaml:"name"` // claude, claude-cli, amp, aider
 }
 
 // DockerConfig controls container resources and networking.
@@ -125,9 +125,9 @@ func (c *Config) Save(path string) error {
 
 // Validate checks the configuration for errors.
 func (c *Config) Validate() error {
-	validAgents := map[string]bool{"claude": true, "amp": true, "aider": true}
+	validAgents := map[string]bool{"claude": true, "claude-cli": true, "amp": true, "aider": true}
 	if !validAgents[c.Agent.Name] {
-		return fmt.Errorf("invalid agent: %s (must be claude, amp, or aider)", c.Agent.Name)
+		return fmt.Errorf("invalid agent: %s (must be claude, claude-cli, amp, or aider)", c.Agent.Name)
 	}
 
 	validImages := map[string]bool{"node": true, "python": true, "go": true, "rust": true, "full": true}
