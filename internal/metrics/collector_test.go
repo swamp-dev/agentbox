@@ -23,12 +23,16 @@ func TestCollectorSummary(t *testing.T) {
 
 	c := NewCollector(s, sessionID)
 
-	c.RecordUsage(&store.ResourceUsage{
+	if err := c.RecordUsage(&store.ResourceUsage{
 		Iteration: 1, ContainerTimeMs: 5000, EstimatedTokens: 1000, AgentName: "claude",
-	})
-	c.RecordQuality(&store.QualitySnapshot{
+	}); err != nil {
+		t.Fatalf("RecordUsage: %v", err)
+	}
+	if err := c.RecordQuality(&store.QualitySnapshot{
 		Iteration: 1, OverallPass: true, TestTotal: 10, TestPassed: 9, TestFailed: 1,
-	})
+	}); err != nil {
+		t.Fatalf("RecordQuality: %v", err)
+	}
 
 	summary, err := c.Summary()
 	if err != nil {

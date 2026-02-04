@@ -14,7 +14,9 @@ func initTestRepo(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
 	repoDir := filepath.Join(dir, "repo")
-	os.MkdirAll(repoDir, 0755)
+	if err := os.MkdirAll(repoDir, 0755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
 
 	cmds := [][]string{
 		{"git", "init"},
@@ -32,13 +34,19 @@ func initTestRepo(t *testing.T) string {
 
 	// Create initial commit.
 	readme := filepath.Join(repoDir, "README.md")
-	os.WriteFile(readme, []byte("# Test\n"), 0644)
+	if err := os.WriteFile(readme, []byte("# Test\n"), 0644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
 	cmd := exec.Command("git", "add", "-A")
 	cmd.Dir = repoDir
-	cmd.Run()
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("git add: %v", err)
+	}
 	cmd = exec.Command("git", "commit", "-m", "initial commit")
 	cmd.Dir = repoDir
-	cmd.Run()
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("git commit: %v", err)
+	}
 
 	return dir
 }
@@ -122,12 +130,18 @@ func TestCommit(t *testing.T) {
 	gw := NewGitWorkflow("", repoDir, logger)
 
 	ctx := context.Background()
-	gw.CloneOrOpen(ctx)
-	gw.CreateWorktree(ctx, "feat/commit-test")
+	if err := gw.CloneOrOpen(ctx); err != nil {
+		t.Fatalf("CloneOrOpen: %v", err)
+	}
+	if err := gw.CreateWorktree(ctx, "feat/commit-test"); err != nil {
+		t.Fatalf("CreateWorktree: %v", err)
+	}
 
 	// Create a file in the worktree.
 	testFile := filepath.Join(gw.WorktreePath(), "test.txt")
-	os.WriteFile(testFile, []byte("test content"), 0644)
+	if err := os.WriteFile(testFile, []byte("test content"), 0644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
 
 	if err := gw.Commit(ctx, "feat: add test file", nil); err != nil {
 		t.Fatalf("Commit: %v", err)
@@ -151,8 +165,12 @@ func TestCommitNothingToCommit(t *testing.T) {
 	gw := NewGitWorkflow("", repoDir, logger)
 
 	ctx := context.Background()
-	gw.CloneOrOpen(ctx)
-	gw.CreateWorktree(ctx, "feat/empty-test")
+	if err := gw.CloneOrOpen(ctx); err != nil {
+		t.Fatalf("CloneOrOpen: %v", err)
+	}
+	if err := gw.CreateWorktree(ctx, "feat/empty-test"); err != nil {
+		t.Fatalf("CreateWorktree: %v", err)
+	}
 
 	// Commit with nothing staged — should succeed silently.
 	if err := gw.Commit(ctx, "feat: empty", nil); err != nil {
@@ -168,14 +186,22 @@ func TestCurrentCommitAndRollback(t *testing.T) {
 	gw := NewGitWorkflow("", repoDir, logger)
 
 	ctx := context.Background()
-	gw.CloneOrOpen(ctx)
-	gw.CreateWorktree(ctx, "feat/rollback-test")
+	if err := gw.CloneOrOpen(ctx); err != nil {
+		t.Fatalf("CloneOrOpen: %v", err)
+	}
+	if err := gw.CreateWorktree(ctx, "feat/rollback-test"); err != nil {
+		t.Fatalf("CreateWorktree: %v", err)
+	}
 
 	beforeSHA, _ := gw.CurrentCommit(ctx)
 
 	// Make a commit.
-	os.WriteFile(filepath.Join(gw.WorktreePath(), "new.txt"), []byte("x"), 0644)
-	gw.Commit(ctx, "feat: new file", nil)
+	if err := os.WriteFile(filepath.Join(gw.WorktreePath(), "new.txt"), []byte("x"), 0644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	if err := gw.Commit(ctx, "feat: new file", nil); err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
 
 	afterSHA, _ := gw.CurrentCommit(ctx)
 	if beforeSHA == afterSHA {

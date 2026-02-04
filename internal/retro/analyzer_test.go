@@ -22,25 +22,33 @@ func TestAnalyze_BasicReport(t *testing.T) {
 	sessionID, _ := s.CreateSession("", "main", "")
 
 	// Insert tasks.
-	s.InsertTask(&store.Task{
+	if err := s.InsertTask(&store.Task{
 		ID: "t-1", SessionID: sessionID, Title: "Task 1", Status: "completed", MaxAttempts: 3,
-	})
-	s.InsertTask(&store.Task{
+	}); err != nil {
+		t.Fatalf("InsertTask(t-1): %v", err)
+	}
+	if err := s.InsertTask(&store.Task{
 		ID: "t-2", SessionID: sessionID, Title: "Task 2", Status: "pending", MaxAttempts: 3,
-	})
+	}); err != nil {
+		t.Fatalf("InsertTask(t-2): %v", err)
+	}
 
 	// Record attempts.
 	now := time.Now()
 	success := true
-	s.RecordAttempt(&store.Attempt{
+	if _, err := s.RecordAttempt(&store.Attempt{
 		TaskID: "t-1", SessionID: sessionID, Number: 1,
 		AgentName: "claude", StartedAt: now, Success: &success,
-	})
+	}); err != nil {
+		t.Fatalf("RecordAttempt(t-1): %v", err)
+	}
 	fail := false
-	s.RecordAttempt(&store.Attempt{
+	if _, err := s.RecordAttempt(&store.Attempt{
 		TaskID: "t-2", SessionID: sessionID, Number: 2,
 		AgentName: "claude", StartedAt: now, Success: &fail, ErrorMsg: "compile error",
-	})
+	}); err != nil {
+		t.Fatalf("RecordAttempt(t-2): %v", err)
+	}
 
 	analyzer := NewAnalyzer(s, sessionID)
 	report, err := analyzer.Analyze(1, 1, 5)
@@ -63,17 +71,21 @@ func TestDetectPatterns_RepeatedFailure(t *testing.T) {
 	s := openTestStore(t)
 	sessionID, _ := s.CreateSession("", "main", "")
 
-	s.InsertTask(&store.Task{
+	if err := s.InsertTask(&store.Task{
 		ID: "t-1", SessionID: sessionID, Title: "Flaky task", Status: "pending", MaxAttempts: 5,
-	})
+	}); err != nil {
+		t.Fatalf("InsertTask: %v", err)
+	}
 
 	now := time.Now()
 	fail := false
 	for i := 1; i <= 3; i++ {
-		s.RecordAttempt(&store.Attempt{
+		if _, err := s.RecordAttempt(&store.Attempt{
 			TaskID: "t-1", SessionID: sessionID, Number: i,
 			AgentName: "claude", StartedAt: now, Success: &fail, ErrorMsg: "test failure",
-		})
+		}); err != nil {
+			t.Fatalf("RecordAttempt(%d): %v", i, err)
+		}
 	}
 
 	analyzer := NewAnalyzer(s, sessionID)

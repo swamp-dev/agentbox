@@ -28,7 +28,6 @@ var (
 	goPassRe  = regexp.MustCompile(`^ok\s+`)
 	goFailRe  = regexp.MustCompile(`^FAIL\s+`)
 	goTestRe  = regexp.MustCompile(`^--- (PASS|FAIL|SKIP): (\S+)`)
-	goSummRe  = regexp.MustCompile(`^(ok|FAIL)\s+\S+\s+[\d.]+s`)
 
 	// Jest patterns.
 	jestSummRe = regexp.MustCompile(`Tests:\s+(?:(\d+) failed,\s+)?(?:(\d+) skipped,\s+)?(?:(\d+) passed,\s+)?(\d+) total`)

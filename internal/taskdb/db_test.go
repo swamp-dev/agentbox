@@ -26,7 +26,9 @@ func TestAddAndGet(t *testing.T) {
 
 func TestAddDuplicate(t *testing.T) {
 	db := New()
-	db.Add(&Task{ID: "t-1", Title: "First", Status: StatusPending})
+	if err := db.Add(&Task{ID: "t-1", Title: "First", Status: StatusPending}); err != nil {
+		t.Fatalf("setup Add: %v", err)
+	}
 	err := db.Add(&Task{ID: "t-1", Title: "Dup", Status: StatusPending})
 	if err == nil {
 		t.Error("expected error for duplicate task ID")
@@ -35,9 +37,15 @@ func TestAddDuplicate(t *testing.T) {
 
 func TestNextTask_Priority(t *testing.T) {
 	db := New()
-	db.Add(&Task{ID: "t-low", Title: "Low priority", Status: StatusPending, Priority: 10})
-	db.Add(&Task{ID: "t-high", Title: "High priority", Status: StatusPending, Priority: 1})
-	db.Add(&Task{ID: "t-mid", Title: "Mid priority", Status: StatusPending, Priority: 5})
+	for _, task := range []*Task{
+		{ID: "t-low", Title: "Low priority", Status: StatusPending, Priority: 10},
+		{ID: "t-high", Title: "High priority", Status: StatusPending, Priority: 1},
+		{ID: "t-mid", Title: "Mid priority", Status: StatusPending, Priority: 5},
+	} {
+		if err := db.Add(task); err != nil {
+			t.Fatalf("setup Add(%s): %v", task.ID, err)
+		}
+	}
 
 	next := db.NextTask()
 	if next == nil || next.ID != "t-high" {
@@ -47,9 +55,15 @@ func TestNextTask_Priority(t *testing.T) {
 
 func TestNextTask_Dependencies(t *testing.T) {
 	db := New()
-	db.Add(&Task{ID: "t-1", Title: "First", Status: StatusPending, Priority: 1})
-	db.Add(&Task{ID: "t-2", Title: "Second", Status: StatusPending, Priority: 1, DependsOn: []string{"t-1"}})
-	db.Add(&Task{ID: "t-3", Title: "Third", Status: StatusPending, Priority: 1, DependsOn: []string{"t-2"}})
+	for _, task := range []*Task{
+		{ID: "t-1", Title: "First", Status: StatusPending, Priority: 1},
+		{ID: "t-2", Title: "Second", Status: StatusPending, Priority: 1, DependsOn: []string{"t-1"}},
+		{ID: "t-3", Title: "Third", Status: StatusPending, Priority: 1, DependsOn: []string{"t-2"}},
+	} {
+		if err := db.Add(task); err != nil {
+			t.Fatalf("setup Add(%s): %v", task.ID, err)
+		}
+	}
 
 	// Only t-1 should be available.
 	next := db.NextTask()
@@ -81,7 +95,9 @@ func TestNextTask_SkipsExhausted(t *testing.T) {
 			{Number: 2, Success: false},
 		},
 	}
-	db.Add(task)
+	if err := db.Add(task); err != nil {
+		t.Fatalf("setup Add: %v", err)
+	}
 
 	next := db.NextTask()
 	if next != nil {
@@ -91,9 +107,15 @@ func TestNextTask_SkipsExhausted(t *testing.T) {
 
 func TestDetectCycles_NoCycle(t *testing.T) {
 	db := New()
-	db.Add(&Task{ID: "a", Title: "A", Status: StatusPending})
-	db.Add(&Task{ID: "b", Title: "B", Status: StatusPending, DependsOn: []string{"a"}})
-	db.Add(&Task{ID: "c", Title: "C", Status: StatusPending, DependsOn: []string{"b"}})
+	for _, task := range []*Task{
+		{ID: "a", Title: "A", Status: StatusPending},
+		{ID: "b", Title: "B", Status: StatusPending, DependsOn: []string{"a"}},
+		{ID: "c", Title: "C", Status: StatusPending, DependsOn: []string{"b"}},
+	} {
+		if err := db.Add(task); err != nil {
+			t.Fatalf("setup Add(%s): %v", task.ID, err)
+		}
+	}
 
 	cycles := db.DetectCycles()
 	if len(cycles) != 0 {
@@ -115,8 +137,12 @@ func TestDetectCycles_WithCycle(t *testing.T) {
 
 func TestAddDependency_PreventsCycle(t *testing.T) {
 	db := New()
-	db.Add(&Task{ID: "a", Title: "A", Status: StatusPending})
-	db.Add(&Task{ID: "b", Title: "B", Status: StatusPending, DependsOn: []string{"a"}})
+	if err := db.Add(&Task{ID: "a", Title: "A", Status: StatusPending}); err != nil {
+		t.Fatalf("setup Add(a): %v", err)
+	}
+	if err := db.Add(&Task{ID: "b", Title: "B", Status: StatusPending, DependsOn: []string{"a"}}); err != nil {
+		t.Fatalf("setup Add(b): %v", err)
+	}
 
 	err := db.AddDependency("a", "b")
 	if err == nil {
@@ -126,8 +152,12 @@ func TestAddDependency_PreventsCycle(t *testing.T) {
 
 func TestSplitTask(t *testing.T) {
 	db := New()
-	db.Add(&Task{ID: "big", Title: "Big task", Status: StatusPending, Priority: 1})
-	db.Add(&Task{ID: "after", Title: "After big", Status: StatusPending, DependsOn: []string{"big"}})
+	if err := db.Add(&Task{ID: "big", Title: "Big task", Status: StatusPending, Priority: 1}); err != nil {
+		t.Fatalf("setup Add(big): %v", err)
+	}
+	if err := db.Add(&Task{ID: "after", Title: "After big", Status: StatusPending, DependsOn: []string{"big"}}); err != nil {
+		t.Fatalf("setup Add(after): %v", err)
+	}
 
 	subtasks := []*Task{
 		{ID: "big-1", Title: "Part 1", Status: StatusPending, Priority: 1},
@@ -159,9 +189,15 @@ func TestSplitTask(t *testing.T) {
 
 func TestMergeTasks(t *testing.T) {
 	db := New()
-	db.Add(&Task{ID: "a", Title: "A", Status: StatusPending, DependsOn: []string{}})
-	db.Add(&Task{ID: "b", Title: "B", Status: StatusPending, DependsOn: []string{"a"}})
-	db.Add(&Task{ID: "c", Title: "C", Status: StatusPending, DependsOn: []string{"b"}})
+	for _, task := range []*Task{
+		{ID: "a", Title: "A", Status: StatusPending, DependsOn: []string{}},
+		{ID: "b", Title: "B", Status: StatusPending, DependsOn: []string{"a"}},
+		{ID: "c", Title: "C", Status: StatusPending, DependsOn: []string{"b"}},
+	} {
+		if err := db.Add(task); err != nil {
+			t.Fatalf("setup Add(%s): %v", task.ID, err)
+		}
+	}
 
 	merged := &Task{ID: "ab", Title: "A+B", Status: StatusPending}
 	if err := db.MergeTasks(merged, []string{"a", "b"}); err != nil {
@@ -190,14 +226,20 @@ func TestMergeTasks(t *testing.T) {
 
 func TestIsComplete(t *testing.T) {
 	db := New()
-	db.Add(&Task{ID: "t-1", Title: "First", Status: StatusCompleted})
-	db.Add(&Task{ID: "t-2", Title: "Second", Status: StatusCompleted})
+	if err := db.Add(&Task{ID: "t-1", Title: "First", Status: StatusCompleted}); err != nil {
+		t.Fatalf("setup Add(t-1): %v", err)
+	}
+	if err := db.Add(&Task{ID: "t-2", Title: "Second", Status: StatusCompleted}); err != nil {
+		t.Fatalf("setup Add(t-2): %v", err)
+	}
 
 	if !db.IsComplete() {
 		t.Error("expected complete")
 	}
 
-	db.Add(&Task{ID: "t-3", Title: "Third", Status: StatusPending})
+	if err := db.Add(&Task{ID: "t-3", Title: "Third", Status: StatusPending}); err != nil {
+		t.Fatalf("setup Add(t-3): %v", err)
+	}
 	if db.IsComplete() {
 		t.Error("expected not complete")
 	}
@@ -205,9 +247,15 @@ func TestIsComplete(t *testing.T) {
 
 func TestStats(t *testing.T) {
 	db := New()
-	db.Add(&Task{ID: "t-1", Title: "Done", Status: StatusCompleted})
-	db.Add(&Task{ID: "t-2", Title: "Pending", Status: StatusPending})
-	db.Add(&Task{ID: "t-3", Title: "Failed", Status: StatusFailed})
+	for _, task := range []*Task{
+		{ID: "t-1", Title: "Done", Status: StatusCompleted},
+		{ID: "t-2", Title: "Pending", Status: StatusPending},
+		{ID: "t-3", Title: "Failed", Status: StatusFailed},
+	} {
+		if err := db.Add(task); err != nil {
+			t.Fatalf("setup Add(%s): %v", task.ID, err)
+		}
+	}
 
 	total, completed, pending, failed, deferred := db.Stats()
 	if total != 3 {
@@ -229,8 +277,12 @@ func TestStats(t *testing.T) {
 
 func TestSaveAndLoad(t *testing.T) {
 	db := New()
-	db.Add(&Task{ID: "t-1", Title: "First", Status: StatusPending, Priority: 1})
-	db.Add(&Task{ID: "t-2", Title: "Second", Status: StatusCompleted, Priority: 2, DependsOn: []string{"t-1"}})
+	if err := db.Add(&Task{ID: "t-1", Title: "First", Status: StatusPending, Priority: 1}); err != nil {
+		t.Fatalf("setup Add(t-1): %v", err)
+	}
+	if err := db.Add(&Task{ID: "t-2", Title: "Second", Status: StatusCompleted, Priority: 2, DependsOn: []string{"t-1"}}); err != nil {
+		t.Fatalf("setup Add(t-2): %v", err)
+	}
 
 	path := filepath.Join(t.TempDir(), "tasks.json")
 	if err := db.Save(path); err != nil {

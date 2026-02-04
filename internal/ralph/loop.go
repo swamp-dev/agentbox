@@ -336,27 +336,27 @@ func (l *Loop) RunSingleTask(ctx context.Context, task *Task, prompt string) *It
 		result.Error = err.Error()
 		return result
 	}
-	l.progress.RecordStart(task.ID, task.Title)
+	_ = l.progress.RecordStart(task.ID, task.Title)
 
 	output, err := l.runAgent(ctx, prompt)
 	result.Output = output
 	if err != nil {
 		result.Error = fmt.Sprintf("agent execution failed: %s", err)
-		l.progress.RecordFailed(task.ID, task.Title, result.Error)
+		_ = l.progress.RecordFailed(task.ID, task.Title, result.Error)
 		return result
 	}
 
 	agentResult := l.agent.ParseOutput(output)
 	if !agentResult.Success {
 		result.Error = fmt.Sprintf("agent reported failure: %s", agentResult.Message)
-		l.progress.RecordFailed(task.ID, task.Title, result.Error)
+		_ = l.progress.RecordFailed(task.ID, task.Title, result.Error)
 		return result
 	}
 
 	if err := l.runQualityChecks(ctx); err != nil {
 		result.Error = fmt.Sprintf("quality check failed: %s", err)
 		result.QualityOK = false
-		l.progress.RecordFailed(task.ID, task.Title, result.Error)
+		_ = l.progress.RecordFailed(task.ID, task.Title, result.Error)
 		return result
 	}
 	result.QualityOK = true
@@ -370,8 +370,8 @@ func (l *Loop) RunSingleTask(ctx context.Context, task *Task, prompt string) *It
 		return result
 	}
 
-	l.prd.Save(l.projectPath + "/" + l.cfg.Ralph.PRDFile)
-	l.progress.RecordComplete(task.ID, task.Title, "Task completed successfully", result.Learnings)
+	_ = l.prd.Save(l.projectPath + "/" + l.cfg.Ralph.PRDFile)
+	_ = l.progress.RecordComplete(task.ID, task.Title, "Task completed successfully", result.Learnings)
 
 	return result
 }

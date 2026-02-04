@@ -55,14 +55,16 @@ func TestJournalExportMarkdown(t *testing.T) {
 	sessionID, _ := s.CreateSession("", "main", "")
 
 	j := New(s, sessionID)
-	j.Add(&store.JournalEntry{
+	if err := j.Add(&store.JournalEntry{
 		Kind:       string(KindTaskComplete),
 		Sprint:     1,
 		Iteration:  1,
 		Summary:    "Setup complete",
 		Reflection: "Everything worked on the first try.",
 		Confidence: 5,
-	})
+	}); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
 
 	md, err := j.ExportMarkdown()
 	if err != nil {

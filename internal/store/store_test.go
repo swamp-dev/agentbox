@@ -146,8 +146,12 @@ func TestTaskDependencies(t *testing.T) {
 	}
 
 	// task-2 depends on task-1, task-3 depends on task-2
-	s.AddDependency("task-2", "task-1")
-	s.AddDependency("task-3", "task-2")
+	if err := s.AddDependency("task-2", "task-1"); err != nil {
+		t.Fatalf("AddDependency(task-2, task-1): %v", err)
+	}
+	if err := s.AddDependency("task-3", "task-2"); err != nil {
+		t.Fatalf("AddDependency(task-3, task-2): %v", err)
+	}
 
 	// NextTask should be task-1 (no deps)
 	next, err := s.NextTask(sessionID)
@@ -162,14 +166,18 @@ func TestTaskDependencies(t *testing.T) {
 	}
 
 	// Complete task-1, now task-2 should be next
-	s.UpdateTaskStatus("task-1", "completed")
+	if err := s.UpdateTaskStatus("task-1", "completed"); err != nil {
+		t.Fatalf("UpdateTaskStatus(task-1): %v", err)
+	}
 	next, _ = s.NextTask(sessionID)
 	if next == nil || next.ID != "task-2" {
 		t.Errorf("expected task-2, got %v", next)
 	}
 
 	// Complete task-2, now task-3
-	s.UpdateTaskStatus("task-2", "completed")
+	if err := s.UpdateTaskStatus("task-2", "completed"); err != nil {
+		t.Fatalf("UpdateTaskStatus(task-2): %v", err)
+	}
 	next, _ = s.NextTask(sessionID)
 	if next == nil || next.ID != "task-3" {
 		t.Errorf("expected task-3, got %v", next)
@@ -180,19 +188,23 @@ func TestNextTaskRespectsMaxAttempts(t *testing.T) {
 	s := openTestStore(t)
 	sessionID, _ := s.CreateSession("", "main", "")
 
-	s.InsertTask(&Task{
+	if err := s.InsertTask(&Task{
 		ID: "task-1", SessionID: sessionID, Title: "Flaky task",
 		Status: "pending", MaxAttempts: 2,
-	})
+	}); err != nil {
+		t.Fatalf("InsertTask: %v", err)
+	}
 
 	// Record 2 attempts (max)
 	now := time.Now()
 	for i := 1; i <= 2; i++ {
 		success := false
-		s.RecordAttempt(&Attempt{
+		if _, err := s.RecordAttempt(&Attempt{
 			TaskID: "task-1", SessionID: sessionID, Number: i,
 			AgentName: "claude", StartedAt: now, Success: &success,
-		})
+		}); err != nil {
+			t.Fatalf("RecordAttempt(%d): %v", i, err)
+		}
 	}
 
 	next, err := s.NextTask(sessionID)
@@ -207,9 +219,11 @@ func TestNextTaskRespectsMaxAttempts(t *testing.T) {
 func TestAttemptCRUD(t *testing.T) {
 	s := openTestStore(t)
 	sessionID, _ := s.CreateSession("", "main", "")
-	s.InsertTask(&Task{
+	if err := s.InsertTask(&Task{
 		ID: "task-1", SessionID: sessionID, Title: "Test", Status: "pending", MaxAttempts: 3,
-	})
+	}); err != nil {
+		t.Fatalf("InsertTask: %v", err)
+	}
 
 	now := time.Now()
 	success := true
@@ -245,18 +259,25 @@ func TestAttemptCRUD(t *testing.T) {
 func TestTranscript(t *testing.T) {
 	s := openTestStore(t)
 	sessionID, _ := s.CreateSession("", "main", "")
-	s.InsertTask(&Task{
+	if err := s.InsertTask(&Task{
 		ID: "task-1", SessionID: sessionID, Title: "Test", Status: "pending", MaxAttempts: 3,
-	})
+	}); err != nil {
+		t.Fatalf("InsertTask: %v", err)
+	}
 
 	now := time.Now()
 	success := true
-	attemptID, _ := s.RecordAttempt(&Attempt{
+	attemptID, err := s.RecordAttempt(&Attempt{
 		TaskID: "task-1", SessionID: sessionID, Number: 1,
 		AgentName: "claude", StartedAt: now, Success: &success,
 	})
+	if err != nil {
+		t.Fatalf("RecordAttempt: %v", err)
+	}
 
-	s.SaveTranscript(attemptID, "Full agent output here...")
+	if err := s.SaveTranscript(attemptID, "Full agent output here..."); err != nil {
+		t.Fatalf("SaveTranscript: %v", err)
+	}
 	transcript, err := s.GetTranscript(attemptID)
 	if err != nil {
 		t.Fatalf("getting transcript: %v", err)
@@ -273,7 +294,7 @@ func TestQualitySnapshots(t *testing.T) {
 	// Record snapshots with improving quality
 	for i := 1; i <= 6; i++ {
 		pass := i > 3
-		s.RecordQuality(&QualitySnapshot{
+		if err := s.RecordQuality(&QualitySnapshot{
 			SessionID:   sessionID,
 			Iteration:   i,
 			OverallPass: pass,
@@ -281,7 +302,9 @@ func TestQualitySnapshots(t *testing.T) {
 			TestPassed:  5 + i,
 			TestFailed:  5 - i,
 			FailedTestsJSON: `["test_a"]`,
-		})
+		}); err != nil {
+			t.Fatalf("RecordQuality(%d): %v", i, err)
+		}
 	}
 
 	// Test pass rate
@@ -316,12 +339,16 @@ func TestResourceUsage(t *testing.T) {
 	s := openTestStore(t)
 	sessionID, _ := s.CreateSession("", "main", "")
 
-	s.RecordUsage(&ResourceUsage{
+	if err := s.RecordUsage(&ResourceUsage{
 		SessionID: sessionID, Iteration: 1, ContainerTimeMs: 5000, EstimatedTokens: 1000,
-	})
-	s.RecordUsage(&ResourceUsage{
+	}); err != nil {
+		t.Fatalf("RecordUsage(1): %v", err)
+	}
+	if err := s.RecordUsage(&ResourceUsage{
 		SessionID: sessionID, Iteration: 2, ContainerTimeMs: 3000, EstimatedTokens: 800,
-	})
+	}); err != nil {
+		t.Fatalf("RecordUsage(2): %v", err)
+	}
 
 	total, err := s.TotalUsage(sessionID)
 	if err != nil {
@@ -339,7 +366,7 @@ func TestJournalEntries(t *testing.T) {
 	s := openTestStore(t)
 	sessionID, _ := s.CreateSession("", "main", "")
 
-	s.AddJournalEntry(&JournalEntry{
+	if err := s.AddJournalEntry(&JournalEntry{
 		SessionID:  sessionID,
 		Kind:       "task_complete",
 		TaskID:     "task-1",
@@ -350,7 +377,9 @@ func TestJournalEntries(t *testing.T) {
 		Confidence: 4,
 		Difficulty: 2,
 		Momentum:   4,
-	})
+	}); err != nil {
+		t.Fatalf("AddJournalEntry: %v", err)
+	}
 
 	entries, err := s.JournalEntries(sessionID, nil)
 	if err != nil {
@@ -383,7 +412,7 @@ func TestSprintReports(t *testing.T) {
 	s := openTestStore(t)
 	sessionID, _ := s.CreateSession("", "main", "")
 
-	s.SaveSprintReport(&SprintReport{
+	if err := s.SaveSprintReport(&SprintReport{
 		SessionID:      sessionID,
 		SprintNumber:   1,
 		StartIteration: 1,
@@ -394,7 +423,9 @@ func TestSprintReports(t *testing.T) {
 		Velocity:       0.67,
 		QualityTrend:   "improving",
 		TestPassRate:   0.85,
-	})
+	}); err != nil {
+		t.Fatalf("SaveSprintReport: %v", err)
+	}
 
 	reports, err := s.SprintReports(sessionID)
 	if err != nil {
@@ -412,18 +443,22 @@ func TestReviewResults(t *testing.T) {
 	s := openTestStore(t)
 	sessionID, _ := s.CreateSession("", "main", "")
 
-	s.SaveReviewResult(&ReviewResult{
+	if err := s.SaveReviewResult(&ReviewResult{
 		SessionID:    sessionID,
 		Sprint:       1,
 		ReviewAgent:  "claude-review",
 		FindingsJSON: `[{"severity":"minor","description":"unused import"}]`,
 		Summary:      "Looks good overall",
 		Approved:     true,
-	})
+	}); err != nil {
+		t.Fatalf("SaveReviewResult: %v", err)
+	}
 
 	// Verify via raw query (no dedicated getter needed for now)
 	var count int
-	s.db.QueryRow("SELECT COUNT(*) FROM review_results WHERE session_id = ?", sessionID).Scan(&count)
+	if err := s.db.QueryRow("SELECT COUNT(*) FROM review_results WHERE session_id = ?", sessionID).Scan(&count); err != nil {
+		t.Fatalf("QueryRow.Scan: %v", err)
+	}
 	if count != 1 {
 		t.Errorf("expected 1 review result, got %d", count)
 	}
@@ -433,12 +468,16 @@ func TestExportDashboardData(t *testing.T) {
 	s := openTestStore(t)
 	sessionID, _ := s.CreateSession("https://github.com/test/repo", "feat/test", "")
 
-	s.InsertTask(&Task{
+	if err := s.InsertTask(&Task{
 		ID: "task-1", SessionID: sessionID, Title: "Test", Status: "completed", MaxAttempts: 3,
-	})
-	s.InsertTask(&Task{
+	}); err != nil {
+		t.Fatalf("InsertTask(task-1): %v", err)
+	}
+	if err := s.InsertTask(&Task{
 		ID: "task-2", SessionID: sessionID, Title: "Test 2", Status: "pending", MaxAttempts: 3,
-	})
+	}); err != nil {
+		t.Fatalf("InsertTask(task-2): %v", err)
+	}
 
 	data, err := s.ExportDashboardData(sessionID)
 	if err != nil {

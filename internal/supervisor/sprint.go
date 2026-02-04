@@ -2,7 +2,6 @@ package supervisor
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log/slog"
 	"time"
@@ -152,7 +151,7 @@ func (sr *SprintRunner) RunSprint(ctx context.Context, sprintNum, startIter int)
 	report, err := analyzer.Analyze(sprintNum, startIter, sr.iteration)
 	if err == nil {
 		report.Duration = time.Since(sprintStart)
-		analyzer.SaveReport(report)
+		_ = analyzer.SaveReport(report)
 
 		// Apply recommendations.
 		if len(report.Recommendations) > 0 {
@@ -184,7 +183,7 @@ func (sr *SprintRunner) runIteration(ctx context.Context, task *taskdb.Task) boo
 
 	// Write journal entry for task start.
 	if sr.cfg.JournalEnabled {
-		sr.journal.Add(&store.JournalEntry{
+		_ = sr.journal.Add(&store.JournalEntry{
 			Kind:      string(journal.KindTaskStart),
 			TaskID:    task.ID,
 			Sprint:    sr.sprintNum,
@@ -230,7 +229,7 @@ func (sr *SprintRunner) runIteration(ctx context.Context, task *taskdb.Task) boo
 	duration := time.Since(iterStart)
 
 	// Record resource usage.
-	sr.collector.RecordUsage(&store.ResourceUsage{
+	_ = sr.collector.RecordUsage(&store.ResourceUsage{
 		Iteration:       sr.iteration,
 		TaskID:          task.ID,
 		AgentName:       sr.cfg.Agent,
@@ -250,7 +249,7 @@ func (sr *SprintRunner) runIteration(ctx context.Context, task *taskdb.Task) boo
 	if transcript == "" {
 		transcript = fmt.Sprintf("Prompt sent for task %s (iteration %d). Error: %s", task.ID, sr.iteration, agentResult.Error)
 	}
-	sr.store.SaveTranscript(attemptID, transcript)
+	_ = sr.store.SaveTranscript(attemptID, transcript)
 
 	// Record attempt on the taskdb task.
 	task.Attempts = append(task.Attempts, taskdb.Attempt{
@@ -275,7 +274,7 @@ func (sr *SprintRunner) runIteration(ctx context.Context, task *taskdb.Task) boo
 		task.Status = taskdb.StatusCompleted
 		now := time.Now()
 		task.CompletedAt = &now
-		sr.store.UpdateTaskStatus(task.ID, "completed")
+		_ = sr.store.UpdateTaskStatus(task.ID, "completed")
 	}
 
 	// Write journal entry for result.
@@ -284,7 +283,7 @@ func (sr *SprintRunner) runIteration(ctx context.Context, task *taskdb.Task) boo
 		if !success {
 			kind = journal.KindTaskFailed
 		}
-		sr.journal.Add(&store.JournalEntry{
+		_ = sr.journal.Add(&store.JournalEntry{
 			Kind:       string(kind),
 			TaskID:     task.ID,
 			Sprint:     sr.sprintNum,
@@ -323,7 +322,7 @@ func (sr *SprintRunner) writeSprintRetroEntry(report *retro.SprintReport) {
 		reflection += "Recommendations:\n" + recsDesc
 	}
 
-	sr.journal.Add(&store.JournalEntry{
+	_ = sr.journal.Add(&store.JournalEntry{
 		Kind:       string(journal.KindSprintRetro),
 		Sprint:     sr.sprintNum,
 		Iteration:  sr.iteration,
@@ -341,8 +340,3 @@ func timePtr(t time.Time) *time.Time {
 	return &t
 }
 
-// marshalJSON is a helper that ignores errors.
-func marshalJSON(v interface{}) string {
-	data, _ := json.Marshal(v)
-	return string(data)
-}
