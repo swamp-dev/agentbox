@@ -107,6 +107,28 @@ func (s *Supervisor) Run(ctx context.Context) error {
 		return fmt.Errorf("setup: %w", err)
 	}
 
+	// Create agent runner (unless dry-run).
+	var agentRunner AgentRunner
+	if !s.cfg.DryRun {
+		ralphCfg := s.cfg.ToRalphConfig()
+		worktreePath := s.workflow.WorktreePath()
+		if worktreePath == "" {
+			_ = s.store.UpdateSessionStatus(s.sessionID, "failed")
+			return fmt.Errorf("creating agent runner: worktree path not set")
+		}
+		loop, err := ralph.NewLoop(ralphCfg, worktreePath, s.logger)
+		if err != nil {
+			_ = s.store.UpdateSessionStatus(s.sessionID, "failed")
+			return fmt.Errorf("creating ralph loop (image=%s, prd=%s): %w", ralphCfg.Docker.Image, ralphCfg.Ralph.PRDFile, err)
+		}
+		defer func() {
+			if closeErr := loop.Close(); closeErr != nil {
+				s.logger.Warn("failed to close ralph loop", "error", closeErr)
+			}
+		}()
+		agentRunner = NewRalphAgentRunner(loop)
+	}
+
 	// Phase 2: Sprint loop.
 	iteration := 1
 	for sprint := 1; sprint <= s.cfg.MaxSprints; sprint++ {
@@ -124,7 +146,7 @@ func (s *Supervisor) Run(ctx context.Context) error {
 
 		runner := NewSprintRunner(
 			s.cfg, s.store, s.sessionID,
-			s.workflow, s.taskDB, s.collector, s.budget, s.journal, nil, s.logger,
+			s.workflow, s.taskDB, s.collector, s.budget, s.journal, agentRunner, s.logger,
 		)
 
 		result, err := runner.RunSprint(ctx, sprint, iteration)
