@@ -43,6 +43,154 @@ func TestDefaultConfig(t *testing.T) {
 	}
 }
 
+func TestDefaultConfig_DockerFields(t *testing.T) {
+	cfg := DefaultConfig()
+
+	if cfg.DockerImage != "full" {
+		t.Errorf("expected docker image 'full', got %q", cfg.DockerImage)
+	}
+	if cfg.DockerMemory != "4g" {
+		t.Errorf("expected docker memory '4g', got %q", cfg.DockerMemory)
+	}
+	if cfg.DockerCPUs != "2" {
+		t.Errorf("expected docker cpus '2', got %q", cfg.DockerCPUs)
+	}
+	if cfg.DockerNetwork != "none" {
+		t.Errorf("expected docker network 'none', got %q", cfg.DockerNetwork)
+	}
+	if cfg.DryRun {
+		t.Error("expected dry run false by default")
+	}
+}
+
+func TestConfig_ToRalphConfig(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.WorkDir = "/projects/my-app"
+	cfg.Agent = "claude"
+	cfg.MaxSprints = 10
+	cfg.SprintSize = 5
+	cfg.PRDFile = "prd.json"
+	cfg.DockerImage = "go"
+	cfg.DockerMemory = "8g"
+	cfg.DockerCPUs = "4"
+	cfg.DockerNetwork = "bridge"
+	cfg.QualityChecks = []QualityCheck{
+		{Name: "test", Command: "go test ./..."},
+		{Name: "lint", Command: "golangci-lint run"},
+	}
+
+	rc := cfg.ToRalphConfig()
+
+	// Version.
+	if rc.Version != "1.0" {
+		t.Errorf("expected version '1.0', got %q", rc.Version)
+	}
+
+	// Project name from WorkDir basename.
+	if rc.Project.Name != "my-app" {
+		t.Errorf("expected project name 'my-app', got %q", rc.Project.Name)
+	}
+
+	// Agent.
+	if rc.Agent.Name != "claude" {
+		t.Errorf("expected agent 'claude', got %q", rc.Agent.Name)
+	}
+
+	// Docker.
+	if rc.Docker.Image != "go" {
+		t.Errorf("expected docker image 'go', got %q", rc.Docker.Image)
+	}
+	if rc.Docker.Resources.Memory != "8g" {
+		t.Errorf("expected memory '8g', got %q", rc.Docker.Resources.Memory)
+	}
+	if rc.Docker.Resources.CPUs != "4" {
+		t.Errorf("expected cpus '4', got %q", rc.Docker.Resources.CPUs)
+	}
+	if rc.Docker.Network != "bridge" {
+		t.Errorf("expected network 'bridge', got %q", rc.Docker.Network)
+	}
+
+	// Ralph.
+	if rc.Ralph.MaxIterations != 50 {
+		t.Errorf("expected max iterations 50, got %d", rc.Ralph.MaxIterations)
+	}
+	if rc.Ralph.PRDFile != "prd.json" {
+		t.Errorf("expected prd file 'prd.json', got %q", rc.Ralph.PRDFile)
+	}
+	if rc.Ralph.ProgressFile != "progress.txt" {
+		t.Errorf("expected progress file 'progress.txt', got %q", rc.Ralph.ProgressFile)
+	}
+	if rc.Ralph.AutoCommit {
+		t.Error("expected auto commit false (supervisor handles commits)")
+	}
+	if rc.Ralph.StopSignal != "<promise>COMPLETE</promise>" {
+		t.Errorf("expected stop signal, got %q", rc.Ralph.StopSignal)
+	}
+
+	// Quality checks.
+	if len(rc.Ralph.QualityChecks) != 2 {
+		t.Fatalf("expected 2 quality checks, got %d", len(rc.Ralph.QualityChecks))
+	}
+	if rc.Ralph.QualityChecks[0].Name != "test" {
+		t.Errorf("expected first check 'test', got %q", rc.Ralph.QualityChecks[0].Name)
+	}
+	if rc.Ralph.QualityChecks[1].Command != "golangci-lint run" {
+		t.Errorf("expected second check command, got %q", rc.Ralph.QualityChecks[1].Command)
+	}
+}
+
+func TestConfig_ToRalphConfig_EmptyWorkDir(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.WorkDir = ""
+
+	rc := cfg.ToRalphConfig()
+	if rc.Project.Name != "." {
+		t.Errorf("expected project name '.', got %q", rc.Project.Name)
+	}
+}
+
+func TestConfig_ToRalphConfig_NoQualityChecks(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.QualityChecks = nil
+
+	rc := cfg.ToRalphConfig()
+	if rc.Ralph.QualityChecks != nil {
+		t.Errorf("expected nil quality checks, got %v", rc.Ralph.QualityChecks)
+	}
+}
+
+func TestSupervisorRun_DryRunUsesNoopRunner(t *testing.T) {
+	// When DryRun is true, Supervisor.Run() should not attempt to create
+	// a ralph.Loop (which requires Docker). Instead it falls through to
+	// NoopAgentRunner via nil agentRunner.
+	prdContent := `{"name":"Test","tasks":[{"id":"t-1","title":"Task","description":"Do it","status":"pending","priority":1}]}`
+	repoDir := initGitRepo(t, map[string]string{"prd.json": prdContent})
+
+	cfg := DefaultConfig()
+	cfg.WorkDir = repoDir
+	cfg.BranchName = "feat/test-dry-run"
+	cfg.DryRun = true
+	cfg.JournalEnabled = false
+	cfg.ReviewEnabled = false
+	cfg.MaxSprints = 1
+	cfg.SprintSize = 1
+
+	sup, err := New(cfg, testLogger())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	ctx := context.Background()
+	// Run should complete without error and without Docker.
+	// NoopAgentRunner will handle the task (returning failure), but the
+	// session completes normally. Run() closes the store on return, so
+	// we only verify it returns nil.
+	err = sup.Run(ctx)
+	if err != nil {
+		t.Fatalf("Run with DryRun: %v", err)
+	}
+}
+
 func TestParseBudgetDuration(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.BudgetDuration = "4h30m"

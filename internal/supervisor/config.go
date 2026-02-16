@@ -2,8 +2,10 @@
 package supervisor
 
 import (
+	"path/filepath"
 	"time"
 
+	"github.com/swamp-dev/agentbox/internal/config"
 	"github.com/swamp-dev/agentbox/internal/metrics"
 )
 
@@ -42,6 +44,24 @@ type Config struct {
 
 	// Budget duration as string for YAML parsing.
 	BudgetDuration string `yaml:"budget_duration" json:"budget_duration"`
+
+	// Docker settings (used to build config.Config for ralph.Loop).
+	DockerImage   string `yaml:"docker_image" json:"docker_image"`
+	DockerMemory  string `yaml:"docker_memory" json:"docker_memory"`
+	DockerCPUs    string `yaml:"docker_cpus" json:"docker_cpus"`
+	DockerNetwork string `yaml:"docker_network" json:"docker_network"`
+
+	// Quality checks run after each iteration.
+	QualityChecks []QualityCheck `yaml:"quality_checks" json:"quality_checks"`
+
+	// DryRun mode — use NoopAgentRunner instead of real agent.
+	DryRun bool `yaml:"-" json:"-"`
+}
+
+// QualityCheck defines a command to run after each iteration.
+type QualityCheck struct {
+	Name    string `yaml:"name" json:"name"`
+	Command string `yaml:"command" json:"command"`
 }
 
 // DefaultConfig returns a supervisor config with sensible defaults.
@@ -60,7 +80,49 @@ func DefaultConfig() *Config {
 		AutoCommit:          true,
 		EscalationMethod:    "file",
 		PRDFile:             "prd.json",
+		DockerImage:         "full",
+		DockerMemory:        "4g",
+		DockerCPUs:          "2",
+		DockerNetwork:       "none",
 	}
+}
+
+// ToRalphConfig builds a config.Config suitable for ralph.NewLoop().
+func (c *Config) ToRalphConfig() *config.Config {
+	workDir := c.WorkDir
+	if workDir == "" {
+		workDir = "."
+	}
+	return &config.Config{
+		Version: "1.0",
+		Project: config.ProjectConfig{Name: filepath.Base(workDir)},
+		Agent:   config.AgentConfig{Name: c.Agent},
+		Docker: config.DockerConfig{
+			Image:     c.DockerImage,
+			Resources: config.ResourcesConfig{Memory: c.DockerMemory, CPUs: c.DockerCPUs},
+			Network:   c.DockerNetwork,
+		},
+		Ralph: config.RalphConfig{
+			MaxIterations: c.MaxSprints * c.SprintSize,
+			PRDFile:       c.PRDFile,
+			ProgressFile:  "progress.txt",
+			AutoCommit:    false, // Supervisor handles commits via SprintRunner.
+			StopSignal:    "<promise>COMPLETE</promise>",
+			QualityChecks: toConfigQualityChecks(c.QualityChecks),
+		},
+	}
+}
+
+// toConfigQualityChecks converts supervisor QualityChecks to config QualityChecks.
+func toConfigQualityChecks(checks []QualityCheck) []config.QualityCheck {
+	if len(checks) == 0 {
+		return nil
+	}
+	out := make([]config.QualityCheck, len(checks))
+	for i, qc := range checks {
+		out[i] = config.QualityCheck{Name: qc.Name, Command: qc.Command}
+	}
+	return out
 }
 
 // ParseBudgetDuration parses the BudgetDuration string into the Budget.

@@ -26,17 +26,21 @@ code, retrospective reports, and a dev diary of the agent's experience.`,
 }
 
 var (
-	sprintRepo          string
-	sprintPRD           string
-	sprintAgent         string
-	sprintReviewAgent   string
-	sprintSize          int
-	sprintMaxSprints    int
+	sprintRepo           string
+	sprintPRD            string
+	sprintAgent          string
+	sprintReviewAgent    string
+	sprintSize           int
+	sprintMaxSprints     int
 	sprintBudgetDuration string
-	sprintNoJournal     bool
-	sprintNoReview      bool
-	sprintDryRun        bool
-	sprintBranch        string
+	sprintNoJournal      bool
+	sprintNoReview       bool
+	sprintDryRun         bool
+	sprintBranch         string
+	sprintDockerImage    string
+	sprintDockerMemory   string
+	sprintDockerCPUs     string
+	sprintDockerNetwork  string
 )
 
 func init() {
@@ -51,6 +55,10 @@ func init() {
 	sprintCmd.Flags().BoolVar(&sprintNoReview, "no-review", false, "skip code review step")
 	sprintCmd.Flags().BoolVar(&sprintDryRun, "dry-run", false, "show execution plan without running")
 	sprintCmd.Flags().StringVar(&sprintBranch, "branch", "", "branch name (auto-generated if empty)")
+	sprintCmd.Flags().StringVar(&sprintDockerImage, "docker-image", "full", "Docker image (node, python, go, rust, full)")
+	sprintCmd.Flags().StringVar(&sprintDockerMemory, "docker-memory", "4g", "container memory limit")
+	sprintCmd.Flags().StringVar(&sprintDockerCPUs, "docker-cpus", "2", "container CPU limit")
+	sprintCmd.Flags().StringVar(&sprintDockerNetwork, "docker-network", "none", "container network mode (none, bridge, host)")
 }
 
 func runSprint(cmd *cobra.Command, args []string) error {
@@ -65,6 +73,11 @@ func runSprint(cmd *cobra.Command, args []string) error {
 	cfg.JournalEnabled = !sprintNoJournal
 	cfg.ReviewEnabled = !sprintNoReview
 	cfg.BranchName = sprintBranch
+	cfg.DockerImage = sprintDockerImage
+	cfg.DockerMemory = sprintDockerMemory
+	cfg.DockerCPUs = sprintDockerCPUs
+	cfg.DockerNetwork = sprintDockerNetwork
+	cfg.DryRun = sprintDryRun
 
 	if err := cfg.ParseBudgetDuration(); err != nil {
 		return fmt.Errorf("invalid budget duration: %w", err)
@@ -116,6 +129,10 @@ func printDryRun(cfg *supervisor.Config) error {
 	fmt.Printf("Sprint Size:    %d iterations\n", cfg.SprintSize)
 	fmt.Printf("Max Sprints:    %d\n", cfg.MaxSprints)
 	fmt.Printf("Budget:         %s\n", budgetSummary(cfg.Budget))
+	fmt.Printf("Docker Image:   %s\n", cfg.DockerImage)
+	fmt.Printf("Docker Memory:  %s\n", cfg.DockerMemory)
+	fmt.Printf("Docker CPUs:    %s\n", cfg.DockerCPUs)
+	fmt.Printf("Docker Network: %s\n", cfg.DockerNetwork)
 	fmt.Printf("Journal:        %v\n", cfg.JournalEnabled)
 	fmt.Printf("Review:         %v\n", cfg.ReviewEnabled)
 	fmt.Println()
