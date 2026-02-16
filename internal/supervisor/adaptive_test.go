@@ -31,9 +31,11 @@ func TestApply_ReorderTasks(t *testing.T) {
 func TestApply_DeferTask(t *testing.T) {
 	s := openTestStore(t)
 	sessionID, _ := s.CreateSession("", "main", "")
-	s.InsertTask(&store.Task{
+	if err := s.InsertTask(&store.Task{
 		ID: "t-1", SessionID: sessionID, Title: "Stuck task", Status: "pending", MaxAttempts: 3,
-	})
+	}); err != nil {
+		t.Fatalf("InsertTask: %v", err)
+	}
 
 	logger := testLogger()
 	ac := NewAdaptiveController(s, sessionID, logger)
@@ -55,10 +57,12 @@ func TestApply_DeferTask(t *testing.T) {
 func TestApply_UpdateContext(t *testing.T) {
 	s := openTestStore(t)
 	sessionID, _ := s.CreateSession("", "main", "")
-	s.InsertTask(&store.Task{
+	if err := s.InsertTask(&store.Task{
 		ID: "t-1", SessionID: sessionID, Title: "Test",
 		Status: "pending", MaxAttempts: 3, ContextNotes: "original",
-	})
+	}); err != nil {
+		t.Fatalf("InsertTask: %v", err)
+	}
 
 	logger := testLogger()
 	ac := NewAdaptiveController(s, sessionID, logger)
@@ -120,9 +124,11 @@ func TestApply_UnknownAction(t *testing.T) {
 func TestApply_SkipTask(t *testing.T) {
 	s := openTestStore(t)
 	sessionID, _ := s.CreateSession("", "main", "")
-	s.InsertTask(&store.Task{
+	if err := s.InsertTask(&store.Task{
 		ID: "t-1", SessionID: sessionID, Title: "Skip me", Status: "pending", MaxAttempts: 3,
-	})
+	}); err != nil {
+		t.Fatalf("InsertTask: %v", err)
+	}
 
 	logger := testLogger()
 	ac := NewAdaptiveController(s, sessionID, logger)

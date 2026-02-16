@@ -74,9 +74,11 @@ func TestContextBuilder_BuildPrompt(t *testing.T) {
 	sessionID, _ := s.CreateSession("", "main", "")
 
 	// Insert a completed task.
-	s.InsertTask(&store.Task{
+	if err := s.InsertTask(&store.Task{
 		ID: "t-1", SessionID: sessionID, Title: "Setup", Status: "completed", MaxAttempts: 3,
-	})
+	}); err != nil {
+		t.Fatalf("InsertTask: %v", err)
+	}
 
 	cb := NewContextBuilder(s, sessionID)
 
@@ -121,18 +123,22 @@ func TestSprintRunner_BudgetExceeded(t *testing.T) {
 
 	sessionID, _ := s.CreateSession("", "main", "")
 
-	s.InsertTask(&store.Task{
+	if err := s.InsertTask(&store.Task{
 		ID: "t-1", SessionID: sessionID, Title: "Test", Status: "pending", MaxAttempts: 3,
-	})
+	}); err != nil {
+		t.Fatalf("InsertTask: %v", err)
+	}
 
 	budget := metrics.Budget{
 		MaxTokens:     1,
 		WarnThreshold: 0.8,
 	}
 
-	s.RecordUsage(&store.ResourceUsage{
+	if err := s.RecordUsage(&store.ResourceUsage{
 		SessionID: sessionID, Iteration: 1, EstimatedTokens: 100,
-	})
+	}); err != nil {
+		t.Fatalf("RecordUsage: %v", err)
+	}
 
 	collector := metrics.NewCollector(s, sessionID)
 	enforcer := metrics.NewBudgetEnforcer(budget)
@@ -152,9 +158,11 @@ func TestAdaptiveController_Apply(t *testing.T) {
 	defer s.Close()
 
 	sessionID, _ := s.CreateSession("", "main", "")
-	s.InsertTask(&store.Task{
+	if err := s.InsertTask(&store.Task{
 		ID: "t-1", SessionID: sessionID, Title: "Failing task", Status: "pending", MaxAttempts: 3,
-	})
+	}); err != nil {
+		t.Fatalf("InsertTask: %v", err)
+	}
 
 	logger := testLogger()
 	ac := NewAdaptiveController(s, sessionID, logger)
@@ -190,6 +198,62 @@ func (m *MockAgentRunner) RunTask(_ context.Context, task *ralph.Task, _ string)
 		TaskID:  task.ID,
 		Success: false,
 		Error:   "no more mock results",
+	}
+}
+
+// initGitRepo creates a git repo in a temp dir with an initial commit.
+// Optionally writes extra files before committing.
+func initGitRepo(t *testing.T, extraFiles map[string]string) string {
+	t.Helper()
+	repoDir := t.TempDir()
+	for _, args := range [][]string{
+		{"git", "init"},
+		{"git", "config", "user.email", "test@test.com"},
+		{"git", "config", "user.name", "Test"},
+		{"git", "checkout", "-b", "main"},
+	} {
+		cmd := exec.CommandContext(context.Background(), args[0], args[1:]...)
+		cmd.Dir = repoDir
+		if err := cmd.Run(); err != nil {
+			t.Fatalf("git %v: %v", args, err)
+		}
+	}
+	if err := os.WriteFile(repoDir+"/README.md", []byte("# Test\n"), 0644); err != nil {
+		t.Fatalf("WriteFile(README): %v", err)
+	}
+	for name, content := range extraFiles {
+		if err := os.WriteFile(repoDir+"/"+name, []byte(content), 0644); err != nil {
+			t.Fatalf("WriteFile(%s): %v", name, err)
+		}
+	}
+	cmd := exec.CommandContext(context.Background(), "git", "add", "-A")
+	cmd.Dir = repoDir
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("git add: %v", err)
+	}
+	cmd = exec.CommandContext(context.Background(), "git", "commit", "-m", "init")
+	cmd.Dir = repoDir
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("git commit: %v", err)
+	}
+	return repoDir
+}
+
+// gitCommitFile adds a file to the repo and commits it.
+func gitCommitFile(t *testing.T, repoDir, name, content, msg string) {
+	t.Helper()
+	if err := os.WriteFile(repoDir+"/"+name, []byte(content), 0644); err != nil {
+		t.Fatalf("WriteFile(%s): %v", name, err)
+	}
+	cmd := exec.CommandContext(context.Background(), "git", "add", "-A")
+	cmd.Dir = repoDir
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("git add: %v", err)
+	}
+	cmd = exec.CommandContext(context.Background(), "git", "commit", "-m", msg)
+	cmd.Dir = repoDir
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("git commit: %v", err)
 	}
 }
 
@@ -266,15 +330,21 @@ func TestGeneratePRBody(t *testing.T) {
 	defer sup.Store().Close()
 
 	// Add tasks to taskDB.
-	sup.taskDB.Add(&taskdb.Task{
+	if err := sup.taskDB.Add(&taskdb.Task{
 		ID: "t-1", Title: "Setup auth", Status: taskdb.StatusCompleted, MaxAttempts: 3,
-	})
-	sup.taskDB.Add(&taskdb.Task{
+	}); err != nil {
+		t.Fatalf("Add t-1: %v", err)
+	}
+	if err := sup.taskDB.Add(&taskdb.Task{
 		ID: "t-2", Title: "Add tests", Status: taskdb.StatusPending, MaxAttempts: 3,
-	})
-	sup.taskDB.Add(&taskdb.Task{
+	}); err != nil {
+		t.Fatalf("Add t-2: %v", err)
+	}
+	if err := sup.taskDB.Add(&taskdb.Task{
 		ID: "t-3", Title: "Broken task", Status: taskdb.StatusFailed, MaxAttempts: 3,
-	})
+	}); err != nil {
+		t.Fatalf("Add t-3: %v", err)
+	}
 
 	body, err := sup.generatePRBody()
 	if err != nil {
@@ -351,12 +421,20 @@ func TestSprintRunner_RunSprint_Normal(t *testing.T) {
 	cfg.JournalEnabled = false
 
 	tdb := taskdb.New()
-	tdb.Add(&taskdb.Task{ID: "t-1", Title: "Task 1", Status: taskdb.StatusPending, MaxAttempts: 3})
-	tdb.Add(&taskdb.Task{ID: "t-2", Title: "Task 2", Status: taskdb.StatusPending, MaxAttempts: 3})
+	if err := tdb.Add(&taskdb.Task{ID: "t-1", Title: "Task 1", Status: taskdb.StatusPending, MaxAttempts: 3}); err != nil {
+		t.Fatalf("Add t-1: %v", err)
+	}
+	if err := tdb.Add(&taskdb.Task{ID: "t-2", Title: "Task 2", Status: taskdb.StatusPending, MaxAttempts: 3}); err != nil {
+		t.Fatalf("Add t-2: %v", err)
+	}
 
 	// Insert tasks into store too (for retro analysis).
-	s.InsertTask(&store.Task{ID: "t-1", SessionID: sessionID, Title: "Task 1", Status: "pending", MaxAttempts: 3})
-	s.InsertTask(&store.Task{ID: "t-2", SessionID: sessionID, Title: "Task 2", Status: "pending", MaxAttempts: 3})
+	if err := s.InsertTask(&store.Task{ID: "t-1", SessionID: sessionID, Title: "Task 1", Status: "pending", MaxAttempts: 3}); err != nil {
+		t.Fatalf("InsertTask t-1: %v", err)
+	}
+	if err := s.InsertTask(&store.Task{ID: "t-2", SessionID: sessionID, Title: "Task 2", Status: "pending", MaxAttempts: 3}); err != nil {
+		t.Fatalf("InsertTask t-2: %v", err)
+	}
 
 	mockRunner := &MockAgentRunner{
 		results: []*ralph.IterationResult{
@@ -390,11 +468,19 @@ func TestSprintRunner_RunSprint_TaskFailure(t *testing.T) {
 	cfg.MaxConsecutiveFails = 10 // high to not trigger abort
 
 	tdb := taskdb.New()
-	tdb.Add(&taskdb.Task{ID: "t-1", Title: "Failing", Status: taskdb.StatusPending, MaxAttempts: 3})
-	tdb.Add(&taskdb.Task{ID: "t-2", Title: "Passing", Status: taskdb.StatusPending, MaxAttempts: 3})
+	if err := tdb.Add(&taskdb.Task{ID: "t-1", Title: "Failing", Status: taskdb.StatusPending, MaxAttempts: 3}); err != nil {
+		t.Fatalf("Add t-1: %v", err)
+	}
+	if err := tdb.Add(&taskdb.Task{ID: "t-2", Title: "Passing", Status: taskdb.StatusPending, MaxAttempts: 3}); err != nil {
+		t.Fatalf("Add t-2: %v", err)
+	}
 
-	s.InsertTask(&store.Task{ID: "t-1", SessionID: sessionID, Title: "Failing", Status: "pending", MaxAttempts: 3})
-	s.InsertTask(&store.Task{ID: "t-2", SessionID: sessionID, Title: "Passing", Status: "pending", MaxAttempts: 3})
+	if err := s.InsertTask(&store.Task{ID: "t-1", SessionID: sessionID, Title: "Failing", Status: "pending", MaxAttempts: 3}); err != nil {
+		t.Fatalf("InsertTask t-1: %v", err)
+	}
+	if err := s.InsertTask(&store.Task{ID: "t-2", SessionID: sessionID, Title: "Passing", Status: "pending", MaxAttempts: 3}); err != nil {
+		t.Fatalf("InsertTask t-2: %v", err)
+	}
 
 	mockRunner := &MockAgentRunner{
 		results: []*ralph.IterationResult{
@@ -429,18 +515,19 @@ func TestSprintRunner_RunSprint_ConsecutiveFailAbort(t *testing.T) {
 	tdb := taskdb.New()
 	for i := 1; i <= 5; i++ {
 		id := fmt.Sprintf("t-%d", i)
-		tdb.Add(&taskdb.Task{ID: id, Title: "Task", Status: taskdb.StatusPending, MaxAttempts: 5})
-		s.InsertTask(&store.Task{ID: id, SessionID: sessionID, Title: "Task", Status: "pending", MaxAttempts: 5})
+		if err := tdb.Add(&taskdb.Task{ID: id, Title: "Task", Status: taskdb.StatusPending, MaxAttempts: 5}); err != nil {
+			t.Fatalf("Add %s: %v", id, err)
+		}
+		if err := s.InsertTask(&store.Task{ID: id, SessionID: sessionID, Title: "Task", Status: "pending", MaxAttempts: 5}); err != nil {
+			t.Fatalf("InsertTask %s: %v", id, err)
+		}
 	}
 
-	// All fail
+	// Only 2 failures needed — sprint aborts at MaxConsecutiveFails=2.
 	mockRunner := &MockAgentRunner{
 		results: []*ralph.IterationResult{
 			{TaskID: "t-1", Success: false, Error: "fail 1"},
 			{TaskID: "t-2", Success: false, Error: "fail 2"},
-			{TaskID: "t-3", Success: false, Error: "fail 3"},
-			{TaskID: "t-4", Success: false, Error: "fail 4"},
-			{TaskID: "t-5", Success: false, Error: "fail 5"},
 		},
 	}
 
@@ -468,8 +555,12 @@ func TestSprintRunner_RunSprint_CancelledContext(t *testing.T) {
 	cfg.JournalEnabled = false
 
 	tdb := taskdb.New()
-	tdb.Add(&taskdb.Task{ID: "t-1", Title: "Task", Status: taskdb.StatusPending, MaxAttempts: 3})
-	s.InsertTask(&store.Task{ID: "t-1", SessionID: sessionID, Title: "Task", Status: "pending", MaxAttempts: 3})
+	if err := tdb.Add(&taskdb.Task{ID: "t-1", Title: "Task", Status: taskdb.StatusPending, MaxAttempts: 3}); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	if err := s.InsertTask(&store.Task{ID: "t-1", SessionID: sessionID, Title: "Task", Status: "pending", MaxAttempts: 3}); err != nil {
+		t.Fatalf("InsertTask: %v", err)
+	}
 
 	// Cancel context before running.
 	ctx, cancel := context.WithCancel(context.Background())
@@ -496,11 +587,17 @@ func TestSprintRunner_RunSprint_BudgetExceeded(t *testing.T) {
 	budget := metrics.NewBudgetEnforcer(tinyBudget)
 
 	// Pre-load usage to exceed budget.
-	s.RecordUsage(&store.ResourceUsage{SessionID: sessionID, Iteration: 1, EstimatedTokens: 100})
+	if err := s.RecordUsage(&store.ResourceUsage{SessionID: sessionID, Iteration: 1, EstimatedTokens: 100}); err != nil {
+		t.Fatalf("RecordUsage: %v", err)
+	}
 
 	tdb := taskdb.New()
-	tdb.Add(&taskdb.Task{ID: "t-1", Title: "Task", Status: taskdb.StatusPending, MaxAttempts: 3})
-	s.InsertTask(&store.Task{ID: "t-1", SessionID: sessionID, Title: "Task", Status: "pending", MaxAttempts: 3})
+	if err := tdb.Add(&taskdb.Task{ID: "t-1", Title: "Task", Status: taskdb.StatusPending, MaxAttempts: 3}); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	if err := s.InsertTask(&store.Task{ID: "t-1", SessionID: sessionID, Title: "Task", Status: "pending", MaxAttempts: 3}); err != nil {
+		t.Fatalf("InsertTask: %v", err)
+	}
 
 	sr := NewSprintRunner(cfg, s, sessionID, nil, tdb, collector, budget, j, nil, logger)
 	result, _ := sr.RunSprint(context.Background(), 1, 1)
@@ -592,20 +689,24 @@ func TestContextBuilder_BuildPrompt_WithFailingTests(t *testing.T) {
 	sessionID, _ := s.CreateSession("", "main", "")
 
 	// Insert a completed task.
-	s.InsertTask(&store.Task{
+	if err := s.InsertTask(&store.Task{
 		ID: "t-1", SessionID: sessionID, Title: "Setup", Status: "completed", MaxAttempts: 3,
-	})
+	}); err != nil {
+		t.Fatalf("InsertTask: %v", err)
+	}
 
 	// Add failing test data.
 	for i := 1; i <= 3; i++ {
-		s.RecordQuality(&store.QualitySnapshot{
+		if err := s.RecordQuality(&store.QualitySnapshot{
 			SessionID:       sessionID,
 			Iteration:       i,
 			OverallPass:     false,
 			TestTotal:       10,
 			TestFailed:      2,
 			FailedTestsJSON: `["TestAuth", "TestDB"]`,
-		})
+		}); err != nil {
+			t.Fatalf("RecordQuality(%d): %v", i, err)
+		}
 	}
 
 	cb := NewContextBuilder(s, sessionID)
@@ -665,8 +766,12 @@ func TestSprintRunner_RunIteration_Success(t *testing.T) {
 
 	tdb := taskdb.New()
 	task := &taskdb.Task{ID: "t-1", Title: "Task 1", Status: taskdb.StatusPending, MaxAttempts: 3}
-	tdb.Add(task)
-	s.InsertTask(&store.Task{ID: "t-1", SessionID: sessionID, Title: "Task 1", Status: "pending", MaxAttempts: 3})
+	if err := tdb.Add(task); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	if err := s.InsertTask(&store.Task{ID: "t-1", SessionID: sessionID, Title: "Task 1", Status: "pending", MaxAttempts: 3}); err != nil {
+		t.Fatalf("InsertTask: %v", err)
+	}
 
 	mockRunner := &MockAgentRunner{
 		results: []*ralph.IterationResult{
@@ -704,8 +809,12 @@ func TestSprintRunner_RunIteration_Failure(t *testing.T) {
 
 	tdb := taskdb.New()
 	task := &taskdb.Task{ID: "t-1", Title: "Failing task", Status: taskdb.StatusPending, MaxAttempts: 3}
-	tdb.Add(task)
-	s.InsertTask(&store.Task{ID: "t-1", SessionID: sessionID, Title: "Failing task", Status: "pending", MaxAttempts: 3})
+	if err := tdb.Add(task); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	if err := s.InsertTask(&store.Task{ID: "t-1", SessionID: sessionID, Title: "Failing task", Status: "pending", MaxAttempts: 3}); err != nil {
+		t.Fatalf("InsertTask: %v", err)
+	}
 
 	mockRunner := &MockAgentRunner{
 		results: []*ralph.IterationResult{
@@ -783,40 +892,8 @@ func TestImportPRD(t *testing.T) {
 }
 
 func TestSetup_Integration(t *testing.T) {
-	// Create a git repo for the test.
-	repoDir := t.TempDir()
-	cmds := [][]string{
-		{"git", "init"},
-		{"git", "config", "user.email", "test@test.com"},
-		{"git", "config", "user.name", "Test"},
-		{"git", "checkout", "-b", "main"},
-	}
-	for _, args := range cmds {
-		cmd := exec.CommandContext(context.Background(), args[0], args[1:]...)
-		cmd.Dir = repoDir
-		if err := cmd.Run(); err != nil {
-			t.Fatalf("cmd %v: %v", args, err)
-		}
-	}
-	// Create initial commit.
-	readmePath := repoDir + "/README.md"
-	os.WriteFile(readmePath, []byte("# Test\n"), 0644)
-	cmd := exec.CommandContext(context.Background(), "git", "add", "-A")
-	cmd.Dir = repoDir
-	cmd.Run()
-	cmd = exec.CommandContext(context.Background(), "git", "commit", "-m", "init")
-	cmd.Dir = repoDir
-	cmd.Run()
-
-	// Write PRD file.
 	prdContent := `{"name":"Test","tasks":[{"id":"t-1","title":"Setup","description":"Setup","status":"pending","priority":1}]}`
-	os.WriteFile(repoDir+"/prd.json", []byte(prdContent), 0644)
-	cmd = exec.CommandContext(context.Background(), "git", "add", "-A")
-	cmd.Dir = repoDir
-	cmd.Run()
-	cmd = exec.CommandContext(context.Background(), "git", "commit", "-m", "add prd")
-	cmd.Dir = repoDir
-	cmd.Run()
+	repoDir := initGitRepo(t, map[string]string{"prd.json": prdContent})
 
 	// Create supervisor with this repo.
 	cfg := DefaultConfig()
@@ -849,27 +926,8 @@ func TestSetup_Integration(t *testing.T) {
 }
 
 func TestRun_CancelledContext(t *testing.T) {
-	repoDir := t.TempDir()
-	cmds := [][]string{
-		{"git", "init"},
-		{"git", "config", "user.email", "test@test.com"},
-		{"git", "config", "user.name", "Test"},
-		{"git", "checkout", "-b", "main"},
-	}
-	for _, args := range cmds {
-		cmd := exec.CommandContext(context.Background(), args[0], args[1:]...)
-		cmd.Dir = repoDir
-		cmd.Run()
-	}
-	os.WriteFile(repoDir+"/README.md", []byte("# Test\n"), 0644)
 	prdContent := `{"name":"Test","tasks":[{"id":"t-1","title":"Task","description":"Do it","status":"pending","priority":1}]}`
-	os.WriteFile(repoDir+"/prd.json", []byte(prdContent), 0644)
-	cmd := exec.CommandContext(context.Background(), "git", "add", "-A")
-	cmd.Dir = repoDir
-	cmd.Run()
-	cmd = exec.CommandContext(context.Background(), "git", "commit", "-m", "init")
-	cmd.Dir = repoDir
-	cmd.Run()
+	repoDir := initGitRepo(t, map[string]string{"prd.json": prdContent})
 
 	cfg := DefaultConfig()
 	cfg.WorkDir = repoDir
@@ -893,25 +951,7 @@ func TestRun_CancelledContext(t *testing.T) {
 }
 
 func TestFinalize_Basic(t *testing.T) {
-	repoDir := t.TempDir()
-	cmds := [][]string{
-		{"git", "init"},
-		{"git", "config", "user.email", "test@test.com"},
-		{"git", "config", "user.name", "Test"},
-		{"git", "checkout", "-b", "main"},
-	}
-	for _, args := range cmds {
-		cmd := exec.CommandContext(context.Background(), args[0], args[1:]...)
-		cmd.Dir = repoDir
-		cmd.Run()
-	}
-	os.WriteFile(repoDir+"/README.md", []byte("# Test\n"), 0644)
-	cmd := exec.CommandContext(context.Background(), "git", "add", "-A")
-	cmd.Dir = repoDir
-	cmd.Run()
-	cmd = exec.CommandContext(context.Background(), "git", "commit", "-m", "init")
-	cmd.Dir = repoDir
-	cmd.Run()
+	repoDir := initGitRepo(t, nil)
 
 	cfg := DefaultConfig()
 	cfg.WorkDir = repoDir
@@ -927,13 +967,7 @@ func TestFinalize_Basic(t *testing.T) {
 
 	// Setup first to create worktree.
 	prdContent := `{"name":"Test","tasks":[{"id":"t-1","title":"Task","description":"Do it","status":"pending","priority":1}]}`
-	os.WriteFile(repoDir+"/prd.json", []byte(prdContent), 0644)
-	cmd = exec.CommandContext(context.Background(), "git", "add", "-A")
-	cmd.Dir = repoDir
-	cmd.Run()
-	cmd = exec.CommandContext(context.Background(), "git", "commit", "-m", "add prd")
-	cmd.Dir = repoDir
-	cmd.Run()
+	gitCommitFile(t, repoDir, "prd.json", prdContent, "add prd")
 
 	ctx := context.Background()
 	if err := sup.setup(ctx); err != nil {
@@ -955,25 +989,7 @@ func TestFinalize_Basic(t *testing.T) {
 
 func TestRunReviewGate_WithReviewer_NoDiff(t *testing.T) {
 	// Test runReviewGate when reviewer is set but diff fails (no remote).
-	repoDir := t.TempDir()
-	cmds := [][]string{
-		{"git", "init"},
-		{"git", "config", "user.email", "test@test.com"},
-		{"git", "config", "user.name", "Test"},
-		{"git", "checkout", "-b", "main"},
-	}
-	for _, args := range cmds {
-		cmd := exec.CommandContext(context.Background(), args[0], args[1:]...)
-		cmd.Dir = repoDir
-		cmd.Run()
-	}
-	os.WriteFile(repoDir+"/README.md", []byte("# Test\n"), 0644)
-	cmd := exec.CommandContext(context.Background(), "git", "add", "-A")
-	cmd.Dir = repoDir
-	cmd.Run()
-	cmd = exec.CommandContext(context.Background(), "git", "commit", "-m", "init")
-	cmd.Dir = repoDir
-	cmd.Run()
+	repoDir := initGitRepo(t, nil)
 
 	cfg := DefaultConfig()
 	cfg.WorkDir = repoDir
@@ -989,8 +1005,12 @@ func TestRunReviewGate_WithReviewer_NoDiff(t *testing.T) {
 
 	// Set up workflow with worktree.
 	ctx := context.Background()
-	sup.workflow.CloneOrOpen(ctx)
-	sup.workflow.CreateWorktree(ctx, "feat/review-gate-test")
+	if err := sup.workflow.CloneOrOpen(ctx); err != nil {
+		t.Fatalf("CloneOrOpen: %v", err)
+	}
+	if err := sup.workflow.CreateWorktree(ctx, "feat/review-gate-test"); err != nil {
+		t.Fatalf("CreateWorktree: %v", err)
+	}
 
 	// Set a fake reviewer (with nil container — will fail on Review call).
 	sup.reviewer = NewFakeReviewer()
@@ -1005,28 +1025,8 @@ func NewFakeReviewer() *review.Reviewer {
 }
 
 func TestRun_CompletesAllTasks(t *testing.T) {
-	repoDir := t.TempDir()
-	cmds := [][]string{
-		{"git", "init"},
-		{"git", "config", "user.email", "test@test.com"},
-		{"git", "config", "user.name", "Test"},
-		{"git", "checkout", "-b", "main"},
-	}
-	for _, args := range cmds {
-		cmd := exec.CommandContext(context.Background(), args[0], args[1:]...)
-		cmd.Dir = repoDir
-		cmd.Run()
-	}
-
 	prdContent := `{"name":"Test","tasks":[{"id":"t-1","title":"Easy task","description":"Do easy thing","status":"pending","priority":1}]}`
-	os.WriteFile(repoDir+"/README.md", []byte("# Test\n"), 0644)
-	os.WriteFile(repoDir+"/prd.json", []byte(prdContent), 0644)
-	cmd := exec.CommandContext(context.Background(), "git", "add", "-A")
-	cmd.Dir = repoDir
-	cmd.Run()
-	cmd = exec.CommandContext(context.Background(), "git", "commit", "-m", "init")
-	cmd.Dir = repoDir
-	cmd.Run()
+	repoDir := initGitRepo(t, map[string]string{"prd.json": prdContent})
 
 	cfg := DefaultConfig()
 	cfg.WorkDir = repoDir

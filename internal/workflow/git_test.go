@@ -371,16 +371,12 @@ func TestCommit_SpecificFiles(t *testing.T) {
 	}
 
 	// Verify exclude.txt is still untracked via git status.
-	out, err := exec.CommandContext(ctx, "git", "status", "--porcelain").
-		Output()
-	// Run in worktree directory.
 	cmd := exec.CommandContext(ctx, "git", "status", "--porcelain")
 	cmd.Dir = gw.WorktreePath()
 	statusOut, err := cmd.Output()
 	if err != nil {
 		t.Fatalf("git status: %v", err)
 	}
-	_ = out // ignore first attempt
 	if !strings.Contains(string(statusOut), "exclude.txt") {
 		t.Error("expected exclude.txt to still be untracked")
 	}
@@ -462,80 +458,76 @@ func TestRepoNameFromURL_Empty(t *testing.T) {
 	}
 }
 
-func TestDetectBaseBranch_Master(t *testing.T) {
-	// Test detectBaseBranch with a repo that has only master.
+// initClonedRepo creates a repo with the given branch, bare-clones it, then
+// clones that bare repo so the result has proper origin/* remote refs.
+// Returns the clone directory path.
+func initClonedRepo(t *testing.T, branchName string) string {
+	t.Helper()
 	dir := t.TempDir()
 	repoDir := filepath.Join(dir, "repo")
-	os.MkdirAll(repoDir, 0755)
+	if err := os.MkdirAll(repoDir, 0755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
 
-	cmds := [][]string{
+	for _, args := range [][]string{
 		{"git", "init"},
 		{"git", "config", "user.email", "test@test.com"},
 		{"git", "config", "user.name", "Test"},
-		{"git", "checkout", "-b", "master"},
-	}
-	for _, args := range cmds {
+		{"git", "checkout", "-b", branchName},
+	} {
 		cmd := exec.Command(args[0], args[1:]...)
 		cmd.Dir = repoDir
 		if err := cmd.Run(); err != nil {
 			t.Fatalf("init command %v: %v", args, err)
 		}
 	}
-	// Create a commit.
-	os.WriteFile(filepath.Join(repoDir, "README.md"), []byte("# Test\n"), 0644)
-	cmd := exec.Command("git", "add", "-A")
-	cmd.Dir = repoDir
-	cmd.Run()
-	cmd = exec.Command("git", "commit", "-m", "init")
-	cmd.Dir = repoDir
-	cmd.Run()
+	if err := os.WriteFile(filepath.Join(repoDir, "README.md"), []byte("# Test\n"), 0644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	for _, args := range [][]string{
+		{"git", "add", "-A"},
+		{"git", "commit", "-m", "init"},
+	} {
+		cmd := exec.Command(args[0], args[1:]...)
+		cmd.Dir = repoDir
+		if err := cmd.Run(); err != nil {
+			t.Fatalf("git %v: %v", args, err)
+		}
+	}
 
-	// Create a bare remote clone with origin/master.
 	bareDir := filepath.Join(dir, "bare.git")
-	cmd = exec.Command("git", "clone", "--bare", repoDir, bareDir)
-	cmd.Run()
-
-	// Clone from bare to get origin refs.
+	if err := exec.Command("git", "clone", "--bare", repoDir, bareDir).Run(); err != nil {
+		t.Fatalf("bare clone: %v", err)
+	}
 	cloneDir := filepath.Join(dir, "clone")
-	cmd = exec.Command("git", "clone", bareDir, cloneDir)
-	cmd.Run()
+	if err := exec.Command("git", "clone", bareDir, cloneDir).Run(); err != nil {
+		t.Fatalf("clone: %v", err)
+	}
+	return cloneDir
+}
+
+func TestDetectBaseBranch_Master(t *testing.T) {
+	cloneDir := initClonedRepo(t, "master")
 
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 	gw := NewGitWorkflow("", cloneDir, logger)
-	ctx := context.Background()
 
-	branch, err := gw.detectBaseBranch(ctx, cloneDir)
+	branch, err := gw.detectBaseBranch(context.Background(), cloneDir)
 	if err != nil {
 		t.Fatalf("detectBaseBranch: %v", err)
 	}
-	// Should detect origin/master.
 	if branch != "origin/master" {
 		t.Errorf("expected 'origin/master', got %q", branch)
 	}
 }
 
 func TestDetectBaseBranch_Main(t *testing.T) {
-	// Create a repo with main branch and clone it so origin/main exists.
-	dir := initTestRepo(t) // creates repo with "main" branch
-	remoteDir := filepath.Join(dir, "repo")
-
-	bareDir := filepath.Join(dir, "bare.git")
-	cmd := exec.Command("git", "clone", "--bare", remoteDir, bareDir)
-	if err := cmd.Run(); err != nil {
-		t.Fatalf("bare clone: %v", err)
-	}
-
-	cloneDir := filepath.Join(dir, "clone")
-	cmd = exec.Command("git", "clone", bareDir, cloneDir)
-	if err := cmd.Run(); err != nil {
-		t.Fatalf("clone: %v", err)
-	}
+	cloneDir := initClonedRepo(t, "main")
 
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 	gw := NewGitWorkflow("", cloneDir, logger)
-	ctx := context.Background()
 
-	branch, err := gw.detectBaseBranch(ctx, cloneDir)
+	branch, err := gw.detectBaseBranch(context.Background(), cloneDir)
 	if err != nil {
 		t.Fatalf("detectBaseBranch: %v", err)
 	}
@@ -545,46 +537,12 @@ func TestDetectBaseBranch_Main(t *testing.T) {
 }
 
 func TestDetectBaseBranch_NeitherMainNorMaster(t *testing.T) {
-	// Create a repo where the only remote branch is something other than main/master.
-	dir := t.TempDir()
-	repoDir := filepath.Join(dir, "repo")
-	os.MkdirAll(repoDir, 0755)
-
-	cmds := [][]string{
-		{"git", "init"},
-		{"git", "config", "user.email", "test@test.com"},
-		{"git", "config", "user.name", "Test"},
-		{"git", "checkout", "-b", "develop"},
-	}
-	for _, args := range cmds {
-		cmd := exec.Command(args[0], args[1:]...)
-		cmd.Dir = repoDir
-		if err := cmd.Run(); err != nil {
-			t.Fatalf("init command %v: %v", args, err)
-		}
-	}
-	os.WriteFile(filepath.Join(repoDir, "README.md"), []byte("# Test\n"), 0644)
-	cmd := exec.Command("git", "add", "-A")
-	cmd.Dir = repoDir
-	_ = cmd.Run()
-	cmd = exec.Command("git", "commit", "-m", "init")
-	cmd.Dir = repoDir
-	_ = cmd.Run()
-
-	// Clone to get origin refs (only origin/develop, no main or master).
-	bareDir := filepath.Join(dir, "bare.git")
-	cmd = exec.Command("git", "clone", "--bare", repoDir, bareDir)
-	_ = cmd.Run()
-
-	cloneDir := filepath.Join(dir, "clone")
-	cmd = exec.Command("git", "clone", bareDir, cloneDir)
-	_ = cmd.Run()
+	cloneDir := initClonedRepo(t, "develop")
 
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 	gw := NewGitWorkflow("", cloneDir, logger)
-	ctx := context.Background()
 
-	branch, err := gw.detectBaseBranch(ctx, cloneDir)
+	branch, err := gw.detectBaseBranch(context.Background(), cloneDir)
 	if err != nil {
 		t.Fatalf("detectBaseBranch: %v", err)
 	}

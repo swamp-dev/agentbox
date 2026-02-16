@@ -91,7 +91,9 @@ func runRetro(cmd *cobra.Command, args []string) error {
 func exportRetros(reports []*store.SprintReport) error {
 	cwd, _ := os.Getwd()
 	dir := cwd + "/.agentbox/retros"
-	os.MkdirAll(dir, 0755)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return fmt.Errorf("creating retro directory: %w", err)
+	}
 
 	for _, r := range reports {
 		path := fmt.Sprintf("%s/sprint-%d.json", dir, r.SprintNumber)

@@ -103,7 +103,7 @@ func (s *Supervisor) Run(ctx context.Context) error {
 
 	// Phase 1: Setup.
 	if err := s.setup(ctx); err != nil {
-		s.store.UpdateSessionStatus(s.sessionID, "failed")
+		_ = s.store.UpdateSessionStatus(s.sessionID, "failed")
 		return fmt.Errorf("setup: %w", err)
 	}
 
@@ -112,7 +112,7 @@ func (s *Supervisor) Run(ctx context.Context) error {
 	for sprint := 1; sprint <= s.cfg.MaxSprints; sprint++ {
 		select {
 		case <-ctx.Done():
-			s.store.UpdateSessionStatus(s.sessionID, "cancelled")
+			_ = s.store.UpdateSessionStatus(s.sessionID, "cancelled")
 			return ctx.Err()
 		default:
 		}
@@ -178,12 +178,14 @@ func (s *Supervisor) setup(ctx context.Context) error {
 
 	// Ensure .agentbox directory in worktree.
 	agentboxDir := filepath.Join(s.workflow.WorktreePath(), ".agentbox")
-	os.MkdirAll(agentboxDir, 0755)
+	if err := os.MkdirAll(agentboxDir, 0755); err != nil {
+		return fmt.Errorf("creating worktree .agentbox directory: %w", err)
+	}
 
 	// Write initial journal entry.
 	if s.cfg.JournalEnabled {
 		total, _, _, _, _ := s.taskDB.Stats()
-		s.journal.Add(&store.JournalEntry{
+		_ = s.journal.Add(&store.JournalEntry{
 			Kind:       string(journal.KindReflection),
 			Sprint:     0,
 			Iteration:  0,
@@ -224,10 +226,12 @@ func (s *Supervisor) importPRD() error {
 		if task.Status == "" {
 			task.Status = taskdb.StatusPending
 		}
-		s.taskDB.Add(task)
+		if err := s.taskDB.Add(task); err != nil {
+			return fmt.Errorf("adding task %s to taskDB: %w", t.ID, err)
+		}
 
 		// Also insert into store.
-		s.store.InsertTask(&store.Task{
+		if err := s.store.InsertTask(&store.Task{
 			ID:          t.ID,
 			SessionID:   s.sessionID,
 			Title:       t.Title,
@@ -236,11 +240,15 @@ func (s *Supervisor) importPRD() error {
 			Priority:    t.Priority,
 			MaxAttempts: 3,
 			Complexity:  3,
-		})
+		}); err != nil {
+			return fmt.Errorf("inserting task %s into store: %w", t.ID, err)
+		}
 
 		// Add dependencies.
 		for _, dep := range t.DependsOn {
-			s.store.AddDependency(t.ID, dep)
+			if err := s.store.AddDependency(t.ID, dep); err != nil {
+				return fmt.Errorf("adding dependency %s -> %s: %w", t.ID, dep, err)
+			}
 		}
 	}
 
@@ -278,19 +286,21 @@ func (s *Supervisor) runReviewGate(ctx context.Context) {
 
 		// Save review result.
 		findingsJSON, _ := json.Marshal(result.Findings)
-		s.store.SaveReviewResult(&store.ReviewResult{
+		if err := s.store.SaveReviewResult(&store.ReviewResult{
 			SessionID:    s.sessionID,
 			Sprint:       0, // Will be updated when we know the sprint number.
 			ReviewAgent:  result.ReviewAgent,
 			FindingsJSON: string(findingsJSON),
 			Summary:      result.Summary,
 			Approved:     result.Approved,
-		})
+		}); err != nil {
+			s.logger.Warn("could not save review result", "error", err)
+		}
 
 		// Write journal entry.
 		if s.cfg.JournalEnabled {
 			counts := result.CountBySeverity()
-			s.journal.Add(&store.JournalEntry{
+			_ = s.journal.Add(&store.JournalEntry{
 				Kind:      string(journal.KindReviewReceived),
 				Iteration: 0,
 				Summary:   fmt.Sprintf("Code review round %d: %v", round, counts),
@@ -321,8 +331,8 @@ func (s *Supervisor) runReviewGate(ctx context.Context) {
 				Priority:    0, // Highest priority.
 				MaxAttempts: 2,
 			}
-			s.taskDB.Add(fixTask)
-			s.store.InsertTask(&store.Task{
+			_ = s.taskDB.Add(fixTask)
+			_ = s.store.InsertTask(&store.Task{
 				ID:          fixTask.ID,
 				SessionID:   s.sessionID,
 				Title:       fixTask.Title,
@@ -348,7 +358,7 @@ func (s *Supervisor) finalize(ctx context.Context) error {
 	if s.cfg.JournalEnabled {
 		total, completed, pending, failed, deferred := s.taskDB.Stats()
 		usage, _ := s.collector.TotalUsage()
-		s.journal.Add(&store.JournalEntry{
+		_ = s.journal.Add(&store.JournalEntry{
 			Kind:      string(journal.KindFinalWrapUp),
 			Sprint:    0,
 			Iteration: 0,
@@ -383,10 +393,12 @@ func (s *Supervisor) finalize(ctx context.Context) error {
 	md, err := s.journal.ExportMarkdown()
 	if err == nil && md != "" {
 		journalPath := filepath.Join(s.workflow.WorktreePath(), ".agentbox", "journal.md")
-		os.WriteFile(journalPath, []byte(md), 0644)
+		if writeErr := os.WriteFile(journalPath, []byte(md), 0644); writeErr != nil {
+			s.logger.Warn("could not write journal", "error", writeErr)
+		}
 	}
 
-	s.store.UpdateSessionStatus(s.sessionID, "completed")
+	_ = s.store.UpdateSessionStatus(s.sessionID, "completed")
 	return nil
 }
 

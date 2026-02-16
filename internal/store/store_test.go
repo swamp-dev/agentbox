@@ -1,6 +1,7 @@
 package store
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
@@ -656,11 +657,11 @@ func TestQualityTrend_Stable(t *testing.T) {
 	}
 }
 
-func TestQualityTrend_FewSnapshots(t *testing.T) {
+func TestQualityTrend_InsufficientData(t *testing.T) {
 	s := openTestStore(t)
 	sessionID, _ := s.CreateSession("", "main", "")
 
-	// Only 1 snapshot — should return "stable" (insufficient data)
+	// Record only 1 snapshot but request lastN=5 — insufficient data to determine trend.
 	if err := s.RecordQuality(&QualitySnapshot{
 		SessionID:   sessionID,
 		Iteration:   1,
@@ -671,12 +672,12 @@ func TestQualityTrend_FewSnapshots(t *testing.T) {
 		t.Fatalf("RecordQuality: %v", err)
 	}
 
-	trend, err := s.QualityTrend(sessionID, 1)
+	trend, err := s.QualityTrend(sessionID, 5)
 	if err != nil {
 		t.Fatalf("QualityTrend: %v", err)
 	}
 	if trend != "stable" {
-		t.Errorf("expected 'stable' for few snapshots, got %q", trend)
+		t.Errorf("expected 'stable' for insufficient data (1 snapshot, requested 5), got %q", trend)
 	}
 }
 
@@ -710,7 +711,7 @@ func TestAddDependency_Duplicate(t *testing.T) {
 	}
 }
 
-func TestNextTask_SkipsInProgress(t *testing.T) {
+func TestNextTask_IncludesInProgress(t *testing.T) {
 	s := openTestStore(t)
 	sessionID, _ := s.CreateSession("", "main", "")
 
@@ -847,16 +848,16 @@ func TestExportJournalMarkdown_Rich(t *testing.T) {
 		t.Fatal("expected non-empty markdown")
 	}
 	// Verify confidence and difficulty appear in output
-	if !containsString(md, "Confidence: 4/5") {
+	if !strings.Contains(md, "Confidence: 4/5") {
 		t.Error("expected markdown to contain confidence")
 	}
-	if !containsString(md, "Difficulty: 3/5") {
+	if !strings.Contains(md, "Difficulty: 3/5") {
 		t.Error("expected markdown to contain difficulty")
 	}
-	if !containsString(md, "Completed auth") {
+	if !strings.Contains(md, "Completed auth") {
 		t.Error("expected markdown to contain summary")
 	}
-	if !containsString(md, "Went well") {
+	if !strings.Contains(md, "Went well") {
 		t.Error("expected markdown to contain reflection")
 	}
 }
@@ -871,19 +872,6 @@ func TestLatestSession_Empty(t *testing.T) {
 	}
 }
 
-// containsString is a simple helper that checks for substring presence.
-func containsString(s, substr string) bool {
-	return len(s) >= len(substr) && (s == substr || len(s) > 0 && containsSubstring(s, substr))
-}
-
-func containsSubstring(s, substr string) bool {
-	for i := 0; i <= len(s)-len(substr); i++ {
-		if s[i:i+len(substr)] == substr {
-			return true
-		}
-	}
-	return false
-}
 
 func TestQualityTrend_NoSnapshots(t *testing.T) {
 	s := openTestStore(t)
@@ -965,10 +953,18 @@ func TestExportDashboardData_Rich(t *testing.T) {
 	}
 
 	// Add quality snapshots, usage, journal, sprint reports.
-	s.RecordQuality(&QualitySnapshot{SessionID: sessionID, Iteration: 1, OverallPass: true, TestTotal: 10, TestPassed: 8})
-	s.RecordUsage(&ResourceUsage{SessionID: sessionID, Iteration: 1, ContainerTimeMs: 5000, EstimatedTokens: 500})
-	s.AddJournalEntry(&JournalEntry{SessionID: sessionID, Kind: "task_complete", Iteration: 1, Summary: "Done", Reflection: "ok"})
-	s.SaveSprintReport(&SprintReport{SessionID: sessionID, SprintNumber: 1, TasksAttempted: 3, TasksCompleted: 1})
+	if err := s.RecordQuality(&QualitySnapshot{SessionID: sessionID, Iteration: 1, OverallPass: true, TestTotal: 10, TestPassed: 8}); err != nil {
+		t.Fatalf("RecordQuality: %v", err)
+	}
+	if err := s.RecordUsage(&ResourceUsage{SessionID: sessionID, Iteration: 1, ContainerTimeMs: 5000, EstimatedTokens: 500}); err != nil {
+		t.Fatalf("RecordUsage: %v", err)
+	}
+	if err := s.AddJournalEntry(&JournalEntry{SessionID: sessionID, Kind: "task_complete", Iteration: 1, Summary: "Done", Reflection: "ok"}); err != nil {
+		t.Fatalf("AddJournalEntry: %v", err)
+	}
+	if err := s.SaveSprintReport(&SprintReport{SessionID: sessionID, SprintNumber: 1, TasksAttempted: 3, TasksCompleted: 1}); err != nil {
+		t.Fatalf("SaveSprintReport: %v", err)
+	}
 
 	data, err := s.ExportDashboardData(sessionID)
 	if err != nil {

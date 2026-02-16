@@ -51,7 +51,7 @@ func runJournal(cmd *cobra.Command, args []string) error {
 		if journalExport {
 			cwd, _ := os.Getwd()
 			path := cwd + "/.agentbox/journal.md"
-			os.MkdirAll(cwd+"/.agentbox", 0755)
+			_ = os.MkdirAll(cwd+"/.agentbox", 0755)
 			if err := os.WriteFile(path, []byte(md), 0644); err != nil {
 				return err
 			}
