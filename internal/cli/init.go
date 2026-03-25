@@ -9,6 +9,7 @@ import (
 
 	"github.com/swamp-dev/agentbox/internal/config"
 	"github.com/swamp-dev/agentbox/internal/ralph"
+	"github.com/swamp-dev/agentbox/internal/wizard"
 )
 
 var (
@@ -42,12 +43,59 @@ func init() {
 	initCmd.Flags().BoolVarP(&initForce, "force", "f", false, "overwrite existing files")
 }
 
+// isTTY checks if stdin is a terminal (not piped or redirected).
+func isTTY() bool {
+	fi, err := os.Stdin.Stat()
+	if err != nil {
+		return false
+	}
+	return (fi.Mode() & os.ModeCharDevice) != 0
+}
+
 func runInit(cmd *cobra.Command, args []string) error {
 	cwd, err := os.Getwd()
 	if err != nil {
 		return fmt.Errorf("getting current directory: %w", err)
 	}
 
+	// Use wizard when TTY and --language was not explicitly provided
+	languageSet := cmd.Flags().Changed("language")
+	if isTTY() && !languageSet {
+		return runWizardInit(cwd)
+	}
+
+	return runNonInteractiveInit(cwd)
+}
+
+func runWizardInit(cwd string) error {
+	w := &wizard.Wizard{
+		Dir:    cwd,
+		Stdin:  os.Stdin,
+		Stdout: os.Stdout,
+	}
+
+	result, err := w.Run()
+	if err != nil {
+		return fmt.Errorf("wizard failed: %w", err)
+	}
+
+	if err := result.GenerateFiles(cwd); err != nil {
+		return fmt.Errorf("generating files: %w", err)
+	}
+
+	fmt.Printf("\n✓ Initialized agentbox project: %s\n", result.ProjectName)
+	fmt.Println("\nCreated files:")
+	fmt.Println("  - agentbox.yaml  (configuration)")
+	fmt.Println("  - prd.json       (task definitions)")
+	fmt.Println("  - progress.txt   (execution log)")
+	fmt.Println("  - AGENTS.md      (agent patterns)")
+	fmt.Println("\nNext steps:")
+	fmt.Println("  1. Run 'agentbox ralph' to start the loop")
+
+	return nil
+}
+
+func runNonInteractiveInit(cwd string) error {
 	if initName == "" {
 		initName = filepath.Base(cwd)
 	}
