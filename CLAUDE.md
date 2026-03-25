@@ -12,7 +12,7 @@ make lint           # golangci-lint run ./...
 make fmt            # go fmt + goimports
 ```
 
-CI runs: build → lint → test (with `-race`) → coverage threshold (40% minimum).
+CI runs: build → lint → test (with `-race`) → coverage threshold (40% floor, target 70-80%).
 
 ## Development Workflow
 
@@ -56,13 +56,15 @@ Build up from unit tests to integration tests as units come together.
 
 ### 4. Quality Checks
 
-All three must pass before requesting review:
+All must pass before requesting review:
 
 ```bash
+make fmt            # Format code (goimports + go fmt)
+make lint           # No lint errors (includes format checks)
 make test           # All tests pass
-make lint           # No lint errors
-go build ./...      # Compiles cleanly
 ```
+
+CI also runs with `-race` — if you suspect concurrency issues, test locally with `go test -race ./...`.
 
 Do not skip or disable checks.
 
@@ -89,18 +91,7 @@ git branch -d feat/TICKET-XXX-description
 
 ## Commit Conventions
 
-Format: `type(scope): description`
-
-| Type | Use for |
-|------|---------|
-| `feat` | New functionality |
-| `fix` | Bug fixes |
-| `test` | Adding or updating tests |
-| `refactor` | Code changes without behavior change |
-| `docs` | Documentation only |
-| `chore` | Build, config, dependencies |
-
-Scope is the package name (e.g., `ralph`, `supervisor`, `agent`, `store`).
+Follow [Conventional Commits](https://www.conventionalcommits.org/) — see CONTRIBUTING.md for the full type table. Scope is the package name (e.g., `ralph`, `supervisor`, `agent`, `store`).
 
 Small, atomic commits that alternate test → implementation:
 
@@ -118,7 +109,7 @@ test(ralph): add edge case for single-task PRD
 cmd/agentbox/           # CLI entrypoint
 internal/
   agent/                # Agent interface + implementations
-  cli/                  # Cobra commands
+  cli/                  # Cobra commands (run, ralph, sprint, init, status, images, journal, dashboard)
   config/               # Config loading (agentbox.yaml)
   container/            # Docker lifecycle
   ralph/                # Ralph loop, PRD parsing, progress
@@ -164,9 +155,23 @@ func TestMyFunction(t *testing.T) {
 
 Test files live alongside their source: `mypkg/thing.go` → `mypkg/thing_test.go`.
 
+Use `t.Helper()` in test helpers so failures report the caller's line. Use `t.TempDir()` for throwaway directories. For store tests, use in-memory SQLite:
+
+```go
+func openTestStore(t *testing.T) *store.Store {
+    t.Helper()
+    s, err := store.Open(":memory:")
+    if err != nil {
+        t.Fatal(err)
+    }
+    t.Cleanup(func() { s.Close() })
+    return s
+}
+```
+
 ### Interfaces for Testability
 
-Mock at boundaries using interfaces (see `store.Store`, `AgentRunner`). Don't mock internal functions.
+Mock at boundaries using interfaces (see `store.Store`, `AgentRunner`, `NoopAgentRunner` for dry-run/testing). Don't mock internal functions.
 
 ### Error Handling
 
@@ -185,7 +190,7 @@ if err != nil {
 | Packages | lowercase, single word | `store`, `taskdb`, `retro` |
 | Exported funcs | PascalCase | `NewCollector`, `RunSprint` |
 | Unexported funcs | camelCase | `importPRD`, `runReviewGate` |
-| Constants | PascalCase or SCREAMING_SNAKE | `StatusPending`, `MAX_RETRIES` |
+| Constants | PascalCase | `StatusPending`, `MaxRetries` |
 | Test funcs | `TestXxx` | `TestNewAgent`, `TestValidateConfig` |
 
 ## Bug Fix Process
@@ -205,8 +210,8 @@ if err != nil {
 
 ### Key Interfaces
 
-- `agent.Agent` — pluggable agent implementations (Claude, Amp, Aider, Claude CLI)
-- `supervisor.AgentRunner` — abstraction for running a single task iteration
+- `agent.Agent` — pluggable agent implementations (Claude, Amp, Aider, Claude CLI). To add a new agent: implement the interface in `internal/agent/`, register in `New()`, add to config validation. See CONTRIBUTING.md for the full walkthrough.
+- `supervisor.AgentRunner` — abstraction for running a single task iteration (`RalphAgentRunner` for real runs, `NoopAgentRunner` for dry-run/testing)
 - `store.Store` — SQLite persistence for sessions, tasks, attempts, metrics
 
 ## What NOT to Do
