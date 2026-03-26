@@ -2,6 +2,8 @@ package wizard
 
 import (
 	"bytes"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -141,6 +143,11 @@ func TestWizardResult_HasDefaults(t *testing.T) {
 	if result.Network == "" {
 		t.Error("Network should have a default value")
 	}
+}
+
+// writeFileToDir is a test helper for creating files in a directory.
+func writeFileToDir(dir, name, content string) error {
+	return os.WriteFile(filepath.Join(dir, name), []byte(content), 0644)
 }
 
 // helper

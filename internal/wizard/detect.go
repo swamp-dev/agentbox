@@ -156,6 +156,23 @@ func DetectQualityChecks(dir, language string) []config.QualityCheck {
 	}
 }
 
+func detectNodePackageManager(dir string) string {
+	lockFiles := []struct {
+		file    string
+		manager string
+	}{
+		{"pnpm-lock.yaml", "pnpm run"},
+		{"yarn.lock", "yarn run"},
+		{"bun.lockb", "bun run"},
+	}
+	for _, lf := range lockFiles {
+		if _, err := os.Stat(filepath.Join(dir, lf.file)); err == nil {
+			return lf.manager
+		}
+	}
+	return "npm run"
+}
+
 func detectNodeQualityChecks(dir string) []config.QualityCheck {
 	data, err := os.ReadFile(filepath.Join(dir, "package.json"))
 	if err != nil {
@@ -169,6 +186,7 @@ func detectNodeQualityChecks(dir string) []config.QualityCheck {
 		return []config.QualityCheck{}
 	}
 
+	runner := detectNodePackageManager(dir)
 	relevantScripts := []string{"test", "typecheck", "lint", "build"}
 	var checks []config.QualityCheck
 
@@ -176,7 +194,7 @@ func detectNodeQualityChecks(dir string) []config.QualityCheck {
 		if _, ok := pkg.Scripts[name]; ok {
 			checks = append(checks, config.QualityCheck{
 				Name:    name,
-				Command: "npm run " + name,
+				Command: runner + " " + name,
 			})
 		}
 	}

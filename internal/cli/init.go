@@ -58,9 +58,12 @@ func runInit(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("getting current directory: %w", err)
 	}
 
-	// Use wizard when TTY and --language was not explicitly provided
+	// Use wizard when TTY and no explicit flags were provided
 	languageSet := cmd.Flags().Changed("language")
-	if isTTY() && !languageSet {
+	nameSet := cmd.Flags().Changed("name")
+	templateSet := cmd.Flags().Changed("template")
+	ciEnv := os.Getenv("CI") == "true" || os.Getenv("AGENTBOX_NO_INTERACTIVE") != ""
+	if isTTY() && !languageSet && !nameSet && !templateSet && !ciEnv {
 		return runWizardInit(cwd)
 	}
 
@@ -79,7 +82,7 @@ func runWizardInit(cwd string) error {
 		return fmt.Errorf("wizard failed: %w", err)
 	}
 
-	if err := result.GenerateFiles(cwd); err != nil {
+	if err := result.GenerateFiles(cwd, initForce); err != nil {
 		return fmt.Errorf("generating files: %w", err)
 	}
 

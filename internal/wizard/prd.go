@@ -7,9 +7,9 @@ import (
 	"github.com/swamp-dev/agentbox/internal/ralph"
 )
 
-// GeneratePRD creates a PRD from a project name and user description,
+// GeneratePRDTemplate creates a PRD from a project name and user description,
 // decomposing the description into standard development phases.
-func GeneratePRD(name, description string) *ralph.PRD {
+func GeneratePRDTemplate(name, description string) *ralph.PRD {
 	tasks := []ralph.Task{
 		{
 			ID:          "task-1",

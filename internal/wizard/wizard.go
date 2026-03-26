@@ -5,10 +5,19 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/swamp-dev/agentbox/internal/config"
 )
+
+// knownAgents is the set of valid agent names.
+var knownAgents = map[string]bool{
+	"claude":     true,
+	"claude-cli": true,
+	"amp":        true,
+	"aider":      true,
+}
 
 // Wizard orchestrates environment detection, user prompts, and file generation.
 type Wizard struct {
@@ -65,7 +74,11 @@ func (w *Wizard) Run() (*WizardResult, error) {
 	for description == "" {
 		fmt.Fprint(w.Stdout, "  What are you building? ")
 		if !scanner.Scan() {
-			return nil, fmt.Errorf("reading description: %w", scanner.Err())
+			err := scanner.Err()
+			if err == nil {
+				err = io.ErrUnexpectedEOF
+			}
+			return nil, fmt.Errorf("reading description: %w", err)
 		}
 		description = strings.TrimSpace(scanner.Text())
 		if description == "" {
@@ -79,8 +92,15 @@ func (w *Wizard) Run() (*WizardResult, error) {
 		fmt.Fprintf(w.Stdout, "  Which agent? [%s] ", agent)
 		if scanner.Scan() {
 			if choice := strings.TrimSpace(scanner.Text()); choice != "" {
-				agent = choice
+				if knownAgents[choice] {
+					agent = choice
+				} else {
+					fmt.Fprintf(w.Stdout, "  Unknown agent %q, using default %q\n", choice, agent)
+				}
 			}
+		}
+		if err := scanner.Err(); err != nil {
+			return nil, fmt.Errorf("reading agent choice: %w", err)
 		}
 	}
 
@@ -97,6 +117,9 @@ func (w *Wizard) Run() (*WizardResult, error) {
 			network = choice
 		}
 	}
+	if err := scanner.Err(); err != nil {
+		return nil, fmt.Errorf("reading network choice: %w", err)
+	}
 
 	return &WizardResult{
 		ProjectName:   projectName,
@@ -109,24 +132,30 @@ func (w *Wizard) Run() (*WizardResult, error) {
 }
 
 // GenerateFiles creates agentbox project files from the wizard result.
-func (r *WizardResult) GenerateFiles(dir string) error {
-	if err := r.generateConfig(dir); err != nil {
+// If force is false, existing files are skipped.
+func (r *WizardResult) GenerateFiles(dir string, force bool) error {
+	if err := r.generateConfig(dir, force); err != nil {
 		return err
 	}
-	if err := r.generatePRD(dir); err != nil {
+	if err := r.generatePRD(dir, force); err != nil {
 		return err
 	}
-	if err := r.generateProgress(dir); err != nil {
+	if err := r.generateProgress(dir, force); err != nil {
 		return err
 	}
-	if err := generateAgentsMD(dir); err != nil {
+	if err := generateAgentsMD(dir, force); err != nil {
 		return err
 	}
 	return nil
 }
 
-func (r *WizardResult) generateConfig(dir string) error {
-	path := dir + "/agentbox.yaml"
+func (r *WizardResult) generateConfig(dir string, force bool) error {
+	path := filepath.Join(dir, "agentbox.yaml")
+	if !force {
+		if _, err := os.Stat(path); err == nil {
+			return nil
+		}
+	}
 	cfg := config.DefaultConfig()
 	cfg.Project.Name = r.ProjectName
 	cfg.Agent.Name = r.Agent
@@ -136,20 +165,35 @@ func (r *WizardResult) generateConfig(dir string) error {
 	return cfg.Save(path)
 }
 
-func (r *WizardResult) generatePRD(dir string) error {
-	path := dir + "/prd.json"
-	prd := GeneratePRD(r.ProjectName, r.Description)
+func (r *WizardResult) generatePRD(dir string, force bool) error {
+	path := filepath.Join(dir, "prd.json")
+	if !force {
+		if _, err := os.Stat(path); err == nil {
+			return nil
+		}
+	}
+	prd := GeneratePRDTemplate(r.ProjectName, r.Description)
 	return prd.Save(path)
 }
 
-func (r *WizardResult) generateProgress(dir string) error {
-	path := dir + "/progress.txt"
+func (r *WizardResult) generateProgress(dir string, force bool) error {
+	path := filepath.Join(dir, "progress.txt")
+	if !force {
+		if _, err := os.Stat(path); err == nil {
+			return nil
+		}
+	}
 	content := fmt.Sprintf("# Progress: %s\n\nNo iterations yet.\n", r.ProjectName)
 	return os.WriteFile(path, []byte(content), 0644)
 }
 
-func generateAgentsMD(dir string) error {
-	path := dir + "/AGENTS.md"
+func generateAgentsMD(dir string, force bool) error {
+	path := filepath.Join(dir, "AGENTS.md")
+	if !force {
+		if _, err := os.Stat(path); err == nil {
+			return nil
+		}
+	}
 	content := `# AGENTS.md
 
 This file documents patterns and learnings discovered by AI agents working on this project.
@@ -201,9 +245,4 @@ func availableAgents(agents []AgentInfo) []AgentInfo {
 		}
 	}
 	return available
-}
-
-// writeFileToDir is a helper used by tests.
-func writeFileToDir(dir, name, content string) error {
-	return os.WriteFile(dir+"/"+name, []byte(content), 0644)
 }

@@ -5,8 +5,8 @@ import (
 	"testing"
 )
 
-func TestGeneratePRD_CreatesValidPRD(t *testing.T) {
-	prd := GeneratePRD("my-project", "Build a REST API for managing tasks")
+func TestGeneratePRDTemplate_CreatesValidPRD(t *testing.T) {
+	prd := GeneratePRDTemplate("my-project", "Build a REST API for managing tasks")
 
 	if prd.Name != "my-project" {
 		t.Errorf("PRD.Name = %q, want %q", prd.Name, "my-project")
@@ -17,17 +17,17 @@ func TestGeneratePRD_CreatesValidPRD(t *testing.T) {
 	}
 }
 
-func TestGeneratePRD_HasCorrectNumberOfTasks(t *testing.T) {
-	prd := GeneratePRD("test-project", "Build a CLI tool")
+func TestGeneratePRDTemplate_HasCorrectNumberOfTasks(t *testing.T) {
+	prd := GeneratePRDTemplate("test-project", "Build a CLI tool")
 
-	if len(prd.Tasks) < 3 || len(prd.Tasks) > 5 {
-		t.Errorf("expected 3-5 tasks, got %d", len(prd.Tasks))
+	if len(prd.Tasks) != 5 {
+		t.Errorf("expected 5 tasks, got %d", len(prd.Tasks))
 	}
 }
 
-func TestGeneratePRD_TasksIncludeDescription(t *testing.T) {
+func TestGeneratePRDTemplate_TasksIncludeDescription(t *testing.T) {
 	description := "Build a REST API for managing tasks"
-	prd := GeneratePRD("my-project", description)
+	prd := GeneratePRDTemplate("my-project", description)
 
 	foundDescRef := false
 	for _, task := range prd.Tasks {
@@ -42,8 +42,8 @@ func TestGeneratePRD_TasksIncludeDescription(t *testing.T) {
 	}
 }
 
-func TestGeneratePRD_AllTasksPending(t *testing.T) {
-	prd := GeneratePRD("test", "Build something")
+func TestGeneratePRDTemplate_AllTasksPending(t *testing.T) {
+	prd := GeneratePRDTemplate("test", "Build something")
 
 	for _, task := range prd.Tasks {
 		if task.Status != "pending" {
@@ -52,8 +52,8 @@ func TestGeneratePRD_AllTasksPending(t *testing.T) {
 	}
 }
 
-func TestGeneratePRD_TasksHaveIDs(t *testing.T) {
-	prd := GeneratePRD("test", "Build something")
+func TestGeneratePRDTemplate_TasksHaveIDs(t *testing.T) {
+	prd := GeneratePRDTemplate("test", "Build something")
 
 	ids := map[string]bool{}
 	for _, task := range prd.Tasks {
@@ -67,8 +67,8 @@ func TestGeneratePRD_TasksHaveIDs(t *testing.T) {
 	}
 }
 
-func TestGeneratePRD_TasksHaveDependencies(t *testing.T) {
-	prd := GeneratePRD("test", "Build something")
+func TestGeneratePRDTemplate_TasksHaveDependencies(t *testing.T) {
+	prd := GeneratePRDTemplate("test", "Build something")
 
 	// First task should have no dependencies
 	if len(prd.Tasks[0].DependsOn) != 0 {
