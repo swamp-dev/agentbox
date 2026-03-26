@@ -57,6 +57,7 @@ func init() {
 	rootCmd.AddCommand(dashboardCmd)
 	rootCmd.AddCommand(retroCmd)
 	rootCmd.AddCommand(journalCmd)
+	rootCmd.AddCommand(mcpCmd)
 }
 
 func initConfig() {
