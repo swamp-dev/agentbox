@@ -33,11 +33,14 @@ type asyncSession struct {
 	Error  string
 }
 
-// NewToolHandler creates a new tool handler.
-func NewToolHandler() *ToolHandler {
+// NewToolHandler creates a new tool handler with the given logger.
+func NewToolHandler(logger *slog.Logger) *ToolHandler {
+	if logger == nil {
+		logger = slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))
+	}
 	return &ToolHandler{
 		sessions: make(map[string]*asyncSession),
-		logger:   slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn})),
+		logger:   logger,
 	}
 }
 
@@ -133,7 +136,18 @@ func (h *ToolHandler) handleRun(argsJSON json.RawMessage) *ToolCallResult {
 	}
 
 	result := ag.ParseOutput(output)
-	return textResult(fmt.Sprintf("Success: %v\nCompleted: %v\n\n%s", result.Success, result.Completed, output))
+
+	// TODO: agentbox_run blocks the MCP message loop. Consider making it async
+	// like ralph_start and sprint_start — return a session ID and let status poll it.
+	data, err := json.Marshal(map[string]interface{}{
+		"success":   result.Success,
+		"completed": result.Completed,
+		"output":    output,
+	})
+	if err != nil {
+		return textError(fmt.Sprintf("marshaling result: %v", err))
+	}
+	return textResult(string(data))
 }
 
 // --- agentbox_ralph_start ---
@@ -202,10 +216,13 @@ func (h *ToolHandler) handleRalphStart(argsJSON json.RawMessage) *ToolCallResult
 		h.mu.Unlock()
 	}()
 
-	data, _ := json.Marshal(map[string]string{
+	data, err := json.Marshal(map[string]string{
 		"session_id": sessionID,
 		"message":    "Ralph loop started",
 	})
+	if err != nil {
+		return textError(fmt.Sprintf("marshaling result: %v", err))
+	}
 	return textResult(string(data))
 }
 
@@ -277,10 +294,13 @@ func (h *ToolHandler) handleSprintStart(argsJSON json.RawMessage) *ToolCallResul
 		h.mu.Unlock()
 	}()
 
-	data, _ := json.Marshal(map[string]string{
+	data, err := json.Marshal(map[string]string{
 		"session_id": sessionID,
 		"message":    "Sprint started",
 	})
+	if err != nil {
+		return textError(fmt.Sprintf("marshaling result: %v", err))
+	}
 	return textResult(string(data))
 }
 
@@ -301,13 +321,20 @@ func (h *ToolHandler) handleStatus(argsJSON json.RawMessage) *ToolCallResult {
 	if args.SessionID != "" {
 		h.mu.Lock()
 		sess, ok := h.sessions[args.SessionID]
+		var snap asyncSession
+		if ok {
+			snap = *sess
+		}
 		h.mu.Unlock()
 		if ok {
-			data, _ := json.Marshal(map[string]string{
-				"session_id": sess.ID,
-				"status":     sess.Status,
-				"error":      sess.Error,
+			data, err := json.Marshal(map[string]string{
+				"session_id": snap.ID,
+				"status":     snap.Status,
+				"error":      snap.Error,
 			})
+			if err != nil {
+				return textError(fmt.Sprintf("marshaling result: %v", err))
+			}
 			return textResult(string(data))
 		}
 	}
@@ -366,15 +393,19 @@ func (h *ToolHandler) handleStatus(argsJSON json.RawMessage) *ToolCallResult {
 		"progress_pct": fmt.Sprintf("%.1f%%", progress),
 	}
 
-	data, _ := json.MarshalIndent(result, "", "  ")
+	data, err := json.MarshalIndent(result, "", "  ")
+	if err != nil {
+		return textError(fmt.Sprintf("marshaling result: %v", err))
+	}
 	return textResult(string(data))
 }
 
 // --- agentbox_journal ---
 
 type journalArgs struct {
-	SessionID int64 `json:"session_id"`
-	Limit     int   `json:"limit,omitempty"`
+	SessionID  string `json:"session_id"`
+	Limit      int    `json:"limit,omitempty"`
+	ProjectDir string `json:"project_dir,omitempty"`
 }
 
 func (h *ToolHandler) handleJournal(argsJSON json.RawMessage) *ToolCallResult {
@@ -383,19 +414,30 @@ func (h *ToolHandler) handleJournal(argsJSON json.RawMessage) *ToolCallResult {
 		return textError(fmt.Sprintf("invalid arguments: %v", err))
 	}
 
-	if args.SessionID == 0 {
+	if args.SessionID == "" {
 		return textError("session_id is required")
 	}
 
-	// Try default store location.
-	dbPath := filepath.Join(".", ".agentbox", "agentbox.db")
+	projectDir := args.ProjectDir
+	if projectDir == "" {
+		projectDir = "."
+	}
+
+	dbPath := filepath.Join(projectDir, ".agentbox", "agentbox.db")
 	s, err := store.Open(dbPath)
 	if err != nil {
 		return textError(fmt.Sprintf("opening store: %v", err))
 	}
 	defer s.Close()
 
-	j := journal.New(s, args.SessionID)
+	// The journal/store layer uses int64 session IDs internally.
+	// Look up the latest session from the store to resolve the numeric ID.
+	sess, err := s.LatestSession()
+	if err != nil {
+		return textError(fmt.Sprintf("looking up session: %v", err))
+	}
+
+	j := journal.New(s, sess.ID)
 	query := &store.JournalQuery{}
 	if args.Limit > 0 {
 		query.Limit = args.Limit
@@ -465,11 +507,14 @@ func (h *ToolHandler) handleTaskList(argsJSON json.RawMessage) *ToolCallResult {
 		}
 	}
 
-	data, _ := json.MarshalIndent(map[string]interface{}{
+	data, err := json.MarshalIndent(map[string]interface{}{
 		"prd_name": prd.Name,
 		"progress": fmt.Sprintf("%.1f%%", prd.Progress()),
 		"tasks":    summaries,
 	}, "", "  ")
+	if err != nil {
+		return textError(fmt.Sprintf("marshaling result: %v", err))
+	}
 
 	return textResult(string(data))
 }
@@ -477,7 +522,8 @@ func (h *ToolHandler) handleTaskList(argsJSON json.RawMessage) *ToolCallResult {
 // --- agentbox_sprint_status ---
 
 type sprintStatusArgs struct {
-	SessionID string `json:"session_id"`
+	SessionID  string `json:"session_id"`
+	ProjectDir string `json:"project_dir,omitempty"`
 }
 
 func (h *ToolHandler) handleSprintStatus(argsJSON json.RawMessage) *ToolCallResult {
@@ -490,21 +536,32 @@ func (h *ToolHandler) handleSprintStatus(argsJSON json.RawMessage) *ToolCallResu
 		return textError("session_id is required")
 	}
 
-	// Check in-memory async sessions.
+	// Check in-memory async sessions, copying fields while lock is held.
 	h.mu.Lock()
 	sess, ok := h.sessions[args.SessionID]
+	var snap asyncSession
+	if ok {
+		snap = *sess
+	}
 	h.mu.Unlock()
 	if ok {
-		data, _ := json.MarshalIndent(map[string]interface{}{
-			"session_id": sess.ID,
-			"status":     sess.Status,
-			"error":      sess.Error,
+		data, err := json.MarshalIndent(map[string]interface{}{
+			"session_id": snap.ID,
+			"status":     snap.Status,
+			"error":      snap.Error,
 		}, "", "  ")
+		if err != nil {
+			return textError(fmt.Sprintf("marshaling result: %v", err))
+		}
 		return textResult(string(data))
 	}
 
 	// Try to look up in the store.
-	dbPath := filepath.Join(".", ".agentbox", "agentbox.db")
+	projectDir := args.ProjectDir
+	if projectDir == "" {
+		projectDir = "."
+	}
+	dbPath := filepath.Join(projectDir, ".agentbox", "agentbox.db")
 	s, err := store.Open(dbPath)
 	if err != nil {
 		return textResult(fmt.Sprintf("No active sprint found for session %s (store not available)", args.SessionID))
@@ -538,7 +595,10 @@ func (h *ToolHandler) handleSprintStatus(argsJSON json.RawMessage) *ToolCallResu
 		},
 	}
 
-	data, _ := json.MarshalIndent(result, "", "  ")
+	data, err := json.MarshalIndent(result, "", "  ")
+	if err != nil {
+		return textError(fmt.Sprintf("marshaling result: %v", err))
+	}
 	return textResult(string(data))
 }
 
@@ -678,12 +738,16 @@ func AllTools() []ToolDefinition {
 				"type": "object",
 				"properties": map[string]interface{}{
 					"session_id": map[string]interface{}{
-						"type":        "integer",
+						"type":        "string",
 						"description": "Session ID to read journal entries for",
 					},
 					"limit": map[string]interface{}{
 						"type":        "integer",
 						"description": "Maximum number of entries to return",
+					},
+					"project_dir": map[string]interface{}{
+						"type":        "string",
+						"description": "Project directory containing the store database (default: current directory)",
 					},
 				},
 				"required": []string{"session_id"},
@@ -708,13 +772,17 @@ func AllTools() []ToolDefinition {
 		},
 		{
 			Name:        "agentbox_sprint_status",
-			Description: "Monitor an active sprint. Returns sprint number, iteration, quality trend, and budget status.",
+			Description: "Monitor an active sprint. Returns session_id, status, and task counts (total and completed).",
 			InputSchema: map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
 					"session_id": map[string]interface{}{
 						"type":        "string",
 						"description": "Session ID of the sprint to monitor",
+					},
+					"project_dir": map[string]interface{}{
+						"type":        "string",
+						"description": "Project directory containing the store database (default: current directory)",
 					},
 				},
 				"required": []string{"session_id"},

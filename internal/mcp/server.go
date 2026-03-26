@@ -12,6 +12,9 @@ import (
 	"sync"
 )
 
+// maxMessageSize is the maximum allowed size for a single JSON-RPC message (10 MB).
+const maxMessageSize = 10 * 1024 * 1024
+
 // JSONRPCRequest represents an incoming JSON-RPC 2.0 request.
 type JSONRPCRequest struct {
 	JSONRPC string          `json:"jsonrpc"`
@@ -56,7 +59,7 @@ type ContentBlock struct {
 
 // Server is the MCP JSON-RPC server.
 type Server struct {
-	reader  *bufio.Reader
+	scanner *bufio.Scanner
 	writer  io.Writer
 	logger  *slog.Logger
 	mu      sync.Mutex
@@ -64,12 +67,19 @@ type Server struct {
 }
 
 // NewServer creates a new MCP server reading from r and writing to w.
-func NewServer(r io.Reader, w io.Writer) *Server {
+// The logger is used for server diagnostics; pass nil for a default stderr logger.
+func NewServer(r io.Reader, w io.Writer, logger *slog.Logger) *Server {
+	if logger == nil {
+		logger = slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))
+	}
+	scanner := bufio.NewScanner(r)
+	buf := make([]byte, 0, 64*1024)
+	scanner.Buffer(buf, maxMessageSize)
 	return &Server{
-		reader:  bufio.NewReader(r),
+		scanner: scanner,
 		writer:  w,
-		logger:  slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn})),
-		handler: NewToolHandler(),
+		logger:  logger,
+		handler: NewToolHandler(logger),
 	}
 }
 
@@ -91,17 +101,13 @@ func (s *Server) Run() error {
 
 // processOne reads and handles a single JSON-RPC message.
 func (s *Server) processOne() error {
-	line, err := s.reader.ReadBytes('\n')
-	if err != nil {
-		if err == io.EOF && len(line) == 0 {
-			return io.EOF
-		}
-		if err == io.EOF && len(line) > 0 {
-			// Process the last line without newline
-		} else {
+	if !s.scanner.Scan() {
+		if err := s.scanner.Err(); err != nil {
 			return err
 		}
+		return io.EOF
 	}
+	line := s.scanner.Bytes()
 
 	var req JSONRPCRequest
 	if err := json.Unmarshal(line, &req); err != nil {

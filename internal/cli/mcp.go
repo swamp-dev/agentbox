@@ -40,6 +40,6 @@ func init() {
 }
 
 func runMCPServe(cmd *cobra.Command, args []string) error {
-	srv := mcp.NewServer(os.Stdin, os.Stdout)
+	srv := mcp.NewServer(os.Stdin, os.Stdout, nil)
 	return srv.Run()
 }

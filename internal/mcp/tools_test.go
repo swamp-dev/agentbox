@@ -103,7 +103,7 @@ func TestToolCallAgentboxStatus(t *testing.T) {
 	stdin := strings.NewReader(input)
 	var stdout bytes.Buffer
 
-	srv := NewServer(stdin, &stdout)
+	srv := NewServer(stdin, &stdout, nil)
 	if err := srv.processOne(); err != nil {
 		t.Fatalf("processOne() error = %v", err)
 	}
@@ -137,7 +137,7 @@ func TestToolCallAgentboxTaskList(t *testing.T) {
 	stdin := strings.NewReader(input)
 	var stdout bytes.Buffer
 
-	srv := NewServer(stdin, &stdout)
+	srv := NewServer(stdin, &stdout, nil)
 	if err := srv.processOne(); err != nil {
 		t.Fatalf("processOne() error = %v", err)
 	}
@@ -152,11 +152,11 @@ func TestToolCallAgentboxTaskList(t *testing.T) {
 }
 
 func TestToolCallAgentboxJournal(t *testing.T) {
-	input := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"agentbox_journal","arguments":{"session_id":1}}}` + "\n"
+	input := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"agentbox_journal","arguments":{"session_id":"1"}}}` + "\n"
 	stdin := strings.NewReader(input)
 	var stdout bytes.Buffer
 
-	srv := NewServer(stdin, &stdout)
+	srv := NewServer(stdin, &stdout, nil)
 	if err := srv.processOne(); err != nil {
 		t.Fatalf("processOne() error = %v", err)
 	}
@@ -176,7 +176,7 @@ func TestToolCallAgentboxRun(t *testing.T) {
 	stdin := strings.NewReader(input)
 	var stdout bytes.Buffer
 
-	srv := NewServer(stdin, &stdout)
+	srv := NewServer(stdin, &stdout, nil)
 	if err := srv.processOne(); err != nil {
 		t.Fatalf("processOne() error = %v", err)
 	}
@@ -206,7 +206,7 @@ func TestToolCallAgentboxRalphStart(t *testing.T) {
 	stdin := strings.NewReader(input)
 	var stdout bytes.Buffer
 
-	srv := NewServer(stdin, &stdout)
+	srv := NewServer(stdin, &stdout, nil)
 	if err := srv.processOne(); err != nil {
 		t.Fatalf("processOne() error = %v", err)
 	}
@@ -225,7 +225,7 @@ func TestToolCallAgentboxSprintStart(t *testing.T) {
 	stdin := strings.NewReader(input)
 	var stdout bytes.Buffer
 
-	srv := NewServer(stdin, &stdout)
+	srv := NewServer(stdin, &stdout, nil)
 	if err := srv.processOne(); err != nil {
 		t.Fatalf("processOne() error = %v", err)
 	}
@@ -244,7 +244,7 @@ func TestToolCallAgentboxSprintStatus(t *testing.T) {
 	stdin := strings.NewReader(input)
 	var stdout bytes.Buffer
 
-	srv := NewServer(stdin, &stdout)
+	srv := NewServer(stdin, &stdout, nil)
 	if err := srv.processOne(); err != nil {
 		t.Fatalf("processOne() error = %v", err)
 	}

@@ -115,7 +115,7 @@ func TestServerInitialize(t *testing.T) {
 	stdin := strings.NewReader(input)
 	var stdout bytes.Buffer
 
-	srv := NewServer(stdin, &stdout)
+	srv := NewServer(stdin, &stdout, nil)
 	// Process one message
 	err := srv.processOne()
 	if err != nil {
@@ -155,7 +155,7 @@ func TestServerToolsList(t *testing.T) {
 	stdin := strings.NewReader(input)
 	var stdout bytes.Buffer
 
-	srv := NewServer(stdin, &stdout)
+	srv := NewServer(stdin, &stdout, nil)
 	if err := srv.processOne(); err != nil {
 		t.Fatalf("processOne() error = %v", err)
 	}
@@ -220,7 +220,7 @@ func TestServerToolsCallUnknown(t *testing.T) {
 	stdin := strings.NewReader(input)
 	var stdout bytes.Buffer
 
-	srv := NewServer(stdin, &stdout)
+	srv := NewServer(stdin, &stdout, nil)
 	if err := srv.processOne(); err != nil {
 		t.Fatalf("processOne() error = %v", err)
 	}
@@ -246,7 +246,7 @@ func TestServerUnknownMethod(t *testing.T) {
 	stdin := strings.NewReader(input)
 	var stdout bytes.Buffer
 
-	srv := NewServer(stdin, &stdout)
+	srv := NewServer(stdin, &stdout, nil)
 	if err := srv.processOne(); err != nil {
 		t.Fatalf("processOne() error = %v", err)
 	}
@@ -268,7 +268,7 @@ func TestServerHandlesEOF(t *testing.T) {
 	stdin := strings.NewReader("") // empty = EOF
 	var stdout bytes.Buffer
 
-	srv := NewServer(stdin, &stdout)
+	srv := NewServer(stdin, &stdout, nil)
 	err := srv.processOne()
 	if err != io.EOF {
 		t.Errorf("expected io.EOF, got %v", err)
@@ -281,7 +281,7 @@ func TestServerNotification(t *testing.T) {
 	stdin := strings.NewReader(input)
 	var stdout bytes.Buffer
 
-	srv := NewServer(stdin, &stdout)
+	srv := NewServer(stdin, &stdout, nil)
 	if err := srv.processOne(); err != nil {
 		t.Fatalf("processOne() error = %v", err)
 	}
