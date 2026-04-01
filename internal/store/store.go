@@ -145,20 +145,20 @@ func (s *Store) LatestSession() (*Session, error) {
 
 // Task represents a task in the store.
 type Task struct {
-	ID                   string    `json:"id"`
-	SessionID            int64     `json:"session_id"`
-	Title                string    `json:"title"`
-	Description          string    `json:"description"`
-	Status               string    `json:"status"`
-	Priority             int       `json:"priority"`
-	Complexity           int       `json:"complexity"`
-	ParentID             string    `json:"parent_id,omitempty"`
-	MaxAttempts          int       `json:"max_attempts"`
-	ContextNotes         string    `json:"context_notes,omitempty"`
-	AcceptanceCriteriaJSON string  `json:"acceptance_criteria_json,omitempty"`
-	TagsJSON             string    `json:"tags_json,omitempty"`
-	CreatedAt            time.Time `json:"created_at"`
-	CompletedAt          *time.Time `json:"completed_at,omitempty"`
+	ID                     string     `json:"id"`
+	SessionID              int64      `json:"session_id"`
+	Title                  string     `json:"title"`
+	Description            string     `json:"description"`
+	Status                 string     `json:"status"`
+	Priority               int        `json:"priority"`
+	Complexity             int        `json:"complexity"`
+	ParentID               string     `json:"parent_id,omitempty"`
+	MaxAttempts            int        `json:"max_attempts"`
+	ContextNotes           string     `json:"context_notes,omitempty"`
+	AcceptanceCriteriaJSON string     `json:"acceptance_criteria_json,omitempty"`
+	TagsJSON               string     `json:"tags_json,omitempty"`
+	CreatedAt              time.Time  `json:"created_at"`
+	CompletedAt            *time.Time `json:"completed_at,omitempty"`
 }
 
 // InsertTask adds a task to the store.
@@ -830,23 +830,23 @@ func (s *Store) SaveReviewResult(r *ReviewResult) error {
 
 // DashboardData holds aggregated stats for display.
 type DashboardData struct {
-	Session        *Session         `json:"session"`
-	TaskStats      *TaskStats       `json:"task_stats"`
-	TotalUsage     *ResourceUsage   `json:"total_usage"`
-	QualityTrend   string           `json:"quality_trend"`
-	TestPassRate   float64          `json:"test_pass_rate"`
-	SprintReports  []*SprintReport  `json:"sprint_reports"`
-	RecentJournal  []*JournalEntry  `json:"recent_journal"`
+	Session       *Session        `json:"session"`
+	TaskStats     *TaskStats      `json:"task_stats"`
+	TotalUsage    *ResourceUsage  `json:"total_usage"`
+	QualityTrend  string          `json:"quality_trend"`
+	TestPassRate  float64         `json:"test_pass_rate"`
+	SprintReports []*SprintReport `json:"sprint_reports"`
+	RecentJournal []*JournalEntry `json:"recent_journal"`
 }
 
 // TaskStats holds task count aggregations.
 type TaskStats struct {
-	Total     int `json:"total"`
-	Pending   int `json:"pending"`
+	Total      int `json:"total"`
+	Pending    int `json:"pending"`
 	InProgress int `json:"in_progress"`
-	Completed int `json:"completed"`
-	Failed    int `json:"failed"`
-	Deferred  int `json:"deferred"`
+	Completed  int `json:"completed"`
+	Failed     int `json:"failed"`
+	Deferred   int `json:"deferred"`
 }
 
 // ExportDashboardData gathers all dashboard data for a session.

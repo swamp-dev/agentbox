@@ -34,14 +34,14 @@ type Pattern struct {
 type RecommendationType string
 
 const (
-	RecReorderTasks   RecommendationType = "reorder_tasks"
-	RecSplitTask      RecommendationType = "split_task"
-	RecSwitchAgent    RecommendationType = "switch_agent"
-	RecRollback       RecommendationType = "rollback"
-	RecUpdateContext  RecommendationType = "update_context"
-	RecEscalate       RecommendationType = "escalate"
-	RecSkipTask       RecommendationType = "skip_task"
-	RecDeferTask      RecommendationType = "defer_task"
+	RecReorderTasks  RecommendationType = "reorder_tasks"
+	RecSplitTask     RecommendationType = "split_task"
+	RecSwitchAgent   RecommendationType = "switch_agent"
+	RecRollback      RecommendationType = "rollback"
+	RecUpdateContext RecommendationType = "update_context"
+	RecEscalate      RecommendationType = "escalate"
+	RecSkipTask      RecommendationType = "skip_task"
+	RecDeferTask     RecommendationType = "defer_task"
 )
 
 // Recommendation is a suggested action based on detected patterns.
@@ -313,7 +313,7 @@ func (a *Analyzer) SaveReport(report *SprintReport) error {
 		TasksFailed:         report.TasksFailed,
 		Velocity:            report.Velocity,
 		QualityTrend:        report.QualityTrend,
-		TestPassRate:         report.TestPassRate,
+		TestPassRate:        report.TestPassRate,
 		PatternsJSON:        string(patternsJSON),
 		RecommendationsJSON: string(recsJSON),
 		TotalTokens:         report.TotalTokens,

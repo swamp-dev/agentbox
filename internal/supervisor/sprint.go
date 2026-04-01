@@ -30,20 +30,20 @@ type SprintRunner struct {
 	runner     AgentRunner
 	logger     *slog.Logger
 
-	sprintNum   int
-	iteration   int
+	sprintNum        int
+	iteration        int
 	consecutiveFails int
 }
 
 // SprintResult captures the outcome of a sprint.
 type SprintResult struct {
-	SprintNumber    int
-	TasksAttempted  int
-	TasksCompleted  int
-	TasksFailed     int
-	BudgetExceeded  bool
-	AbortedEarly    bool
-	AbortReason     string
+	SprintNumber   int
+	TasksAttempted int
+	TasksCompleted int
+	TasksFailed    int
+	BudgetExceeded bool
+	AbortedEarly   bool
+	AbortReason    string
 }
 
 // NewSprintRunner creates a new sprint runner.
@@ -339,4 +339,3 @@ func (sr *SprintRunner) CurrentIteration() int {
 func timePtr(t time.Time) *time.Time {
 	return &t
 }
-

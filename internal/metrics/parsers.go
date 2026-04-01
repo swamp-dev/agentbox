@@ -8,10 +8,10 @@ import (
 
 // TestStats holds parsed test execution results.
 type TestStats struct {
-	Total   int      `json:"total"`
-	Passed  int      `json:"passed"`
-	Failed  int      `json:"failed"`
-	Skipped int      `json:"skipped"`
+	Total       int      `json:"total"`
+	Passed      int      `json:"passed"`
+	Failed      int      `json:"failed"`
+	Skipped     int      `json:"skipped"`
 	FailedTests []string `json:"failed_tests,omitempty"`
 }
 
@@ -25,9 +25,9 @@ func (s *TestStats) PassRate() float64 {
 
 var (
 	// Go test patterns.
-	goPassRe  = regexp.MustCompile(`^ok\s+`)
-	goFailRe  = regexp.MustCompile(`^FAIL\s+`)
-	goTestRe  = regexp.MustCompile(`^--- (PASS|FAIL|SKIP): (\S+)`)
+	goPassRe = regexp.MustCompile(`^ok\s+`)
+	goFailRe = regexp.MustCompile(`^FAIL\s+`)
+	goTestRe = regexp.MustCompile(`^--- (PASS|FAIL|SKIP): (\S+)`)
 
 	// Jest patterns.
 	jestSummRe = regexp.MustCompile(`Tests:\s+(?:(\d+) failed,\s+)?(?:(\d+) skipped,\s+)?(?:(\d+) passed,\s+)?(\d+) total`)

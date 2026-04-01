@@ -20,7 +20,7 @@ including task status, quality trends, budget consumption, and recent journal en
 }
 
 var (
-	dashboardJSON bool
+	dashboardJSON  bool
 	dashboardWatch bool
 )
 
