@@ -38,23 +38,45 @@ func TestClaudeAgentCommand(t *testing.T) {
 	ag := NewClaudeAgent()
 
 	cmd := ag.Command("")
-	if len(cmd) < 2 {
-		t.Errorf("expected at least 2 args, got %d", len(cmd))
+	if len(cmd) != 3 || cmd[0] != "bash" || cmd[1] != "-c" {
+		t.Errorf("expected [bash -c ...], got %v", cmd)
 	}
-	if cmd[0] != "claude" {
-		t.Errorf("expected claude command, got %s", cmd[0])
+	if !strings.Contains(cmd[2], "claude --dangerously-skip-permissions") {
+		t.Errorf("expected claude command in shell string, got %s", cmd[2])
 	}
 
 	cmd = ag.Command("test prompt")
-	found := false
-	for i, arg := range cmd {
-		if arg == "-p" && i+1 < len(cmd) && cmd[i+1] == "test prompt" {
-			found = true
-			break
-		}
+	if len(cmd) != 3 {
+		t.Fatalf("expected 3 args, got %d", len(cmd))
 	}
-	if !found {
-		t.Error("expected prompt to be in command args")
+	if !strings.Contains(cmd[2], "-p") || !strings.Contains(cmd[2], "test prompt") {
+		t.Errorf("expected prompt in shell string, got %s", cmd[2])
+	}
+}
+
+func TestClaudeCommandShellInjection(t *testing.T) {
+	ag := NewClaudeAgent()
+
+	// Prompts with shell metacharacters must be safely quoted
+	prompts := []string{
+		`do something; echo INJECTED`,
+		"run `id`",
+		"value $HOME",
+		`it's a "test"`,
+		"line1\nline2",
+		`path\to\thing`,
+	}
+
+	for _, prompt := range prompts {
+		cmd := ag.Command(prompt)
+		if len(cmd) != 3 || cmd[0] != "bash" || cmd[1] != "-c" {
+			t.Fatalf("unexpected command structure for prompt %q: %v", prompt, cmd)
+		}
+		// The prompt must appear inside single quotes in the shell string
+		shellStr := cmd[2]
+		if !strings.Contains(shellStr, "-p '") {
+			t.Errorf("prompt %q: expected single-quoted argument in %s", prompt, shellStr)
+		}
 	}
 }
 
@@ -587,23 +609,62 @@ func TestClaudeCLIAgentCommand(t *testing.T) {
 	ag := NewClaudeCLIAgent()
 
 	cmd := ag.Command("")
-	if len(cmd) < 2 {
-		t.Errorf("expected at least 2 args, got %d", len(cmd))
+	if len(cmd) != 3 || cmd[0] != "bash" || cmd[1] != "-c" {
+		t.Errorf("expected [bash -c ...], got %v", cmd)
 	}
-	if cmd[0] != "claude" {
-		t.Errorf("expected claude command, got %s", cmd[0])
+	if !strings.Contains(cmd[2], "claude --dangerously-skip-permissions") {
+		t.Errorf("expected claude command in shell string, got %s", cmd[2])
 	}
 
 	cmd = ag.Command("test prompt")
-	found := false
-	for i, arg := range cmd {
-		if arg == "-p" && i+1 < len(cmd) && cmd[i+1] == "test prompt" {
-			found = true
-			break
-		}
+	if len(cmd) != 3 {
+		t.Fatalf("expected 3 args, got %d", len(cmd))
 	}
-	if !found {
-		t.Error("expected prompt to be in command args")
+	if !strings.Contains(cmd[2], "-p") || !strings.Contains(cmd[2], "test prompt") {
+		t.Errorf("expected prompt in shell string, got %s", cmd[2])
+	}
+}
+
+func TestShellQuote(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{"simple", "hello", "'hello'"},
+		{"with space", "hello world", "'hello world'"},
+		{"single quote", "it's", "'it'\\''s'"},
+		{"empty", "", "''"},
+		{"double quote", `say "hi"`, `'say "hi"'`},
+		{"backtick", "run `id`", "'run `id`'"},
+		{"dollar sign", "val $HOME", "'val $HOME'"},
+		{"semicolon injection", "x; echo INJECTED", "'x; echo INJECTED'"},
+		{"newline", "line1\nline2", "'line1\nline2'"},
+		{"backslash", `path\to\thing`, `'path\to\thing'`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := shellQuote(tt.input)
+			if got != tt.want {
+				t.Errorf("shellQuote(%q) = %q, want %q", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestAllowedEndpointsFormat(t *testing.T) {
+	agents := []Agent{
+		NewClaudeAgent(), NewClaudeCLIAgent(), NewAiderAgent(), NewAmpAgent(),
+	}
+	for _, ag := range agents {
+		t.Run(ag.Name(), func(t *testing.T) {
+			for _, ep := range ag.AllowedEndpoints() {
+				parts := strings.SplitN(ep, ":", 2)
+				if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+					t.Errorf("AllowedEndpoints() returned invalid host:port %q", ep)
+				}
+			}
+		})
 	}
 }
 

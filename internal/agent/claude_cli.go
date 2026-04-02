@@ -1,6 +1,8 @@
 package agent
 
-import "strings"
+import (
+	"strings"
+)
 
 // ClaudeCLIAgent implements the Agent interface for Claude Code using
 // subscription-based authentication (Pro/Max plan) instead of an API key.
@@ -21,12 +23,14 @@ func (a *ClaudeCLIAgent) Name() string {
 // Command returns the command to run Claude Code with a prompt.
 // Uses --dangerously-skip-permissions for autonomous execution. This is safe
 // because the Docker container provides the security boundary.
+// The command is wrapped in bash -c because claude (a Node.js binary) requires
+// a shell environment to properly initialize stdio for non-interactive execution.
 func (a *ClaudeCLIAgent) Command(prompt string) []string {
-	args := []string{"claude", "--dangerously-skip-permissions"}
+	cmd := "claude --dangerously-skip-permissions"
 	if prompt != "" {
-		args = append(args, "-p", prompt)
+		cmd += " -p " + shellQuote(prompt)
 	}
-	return args
+	return []string{"bash", "-c", cmd}
 }
 
 // Environment returns the environment variables needed by Claude Code
@@ -67,4 +71,9 @@ func (a *ClaudeCLIAgent) ParseOutput(output string) *AgentOutput {
 	result.Files = extractFilePaths(output)
 
 	return result
+}
+
+// shellQuote wraps s in single quotes for safe shell interpolation.
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'"
 }
