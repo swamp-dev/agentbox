@@ -63,6 +63,19 @@ func NewSprintRunner(
 	if runner == nil {
 		runner = &NoopAgentRunner{}
 	}
+	adaptive := NewAdaptiveController(s, sessionID, logger)
+
+	// Wire fallback agent switching if configured.
+	if cfg.FallbackAgent != "" {
+		adaptive.SetFallbackAgent(cfg.FallbackAgent, func(newAgent string) {
+			cfg.Agent = newAgent
+			logger.Info("agent switched via adaptive controller", "new_agent", newAgent)
+		})
+	}
+	if j != nil {
+		adaptive.SetJournal(j)
+	}
+
 	return &SprintRunner{
 		cfg:        cfg,
 		store:      s,
@@ -73,7 +86,7 @@ func NewSprintRunner(
 		budget:     budget,
 		journal:    j,
 		ctxBuilder: NewContextBuilder(s, sessionID),
-		adaptive:   NewAdaptiveController(s, sessionID, logger),
+		adaptive:   adaptive,
 		runner:     runner,
 		logger:     logger,
 	}

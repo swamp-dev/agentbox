@@ -17,6 +17,7 @@ const (
 	KindTaskFailed     EntryKind = "task_failed"
 	KindSprintRetro    EntryKind = "sprint_retro"
 	KindReviewReceived EntryKind = "review_received"
+	KindAgentSwitch    EntryKind = "agent_switch"
 	KindReflection     EntryKind = "reflection"
 	KindFinalWrapUp    EntryKind = "final_wrap_up"
 )

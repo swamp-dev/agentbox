@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/swamp-dev/agentbox/internal/journal"
 	"github.com/swamp-dev/agentbox/internal/retro"
 	"github.com/swamp-dev/agentbox/internal/store"
 )
@@ -16,11 +17,28 @@ type AdaptiveController struct {
 	store     *store.Store
 	sessionID int64
 	logger    *slog.Logger
+
+	// Fallback agent switching.
+	fallbackAgent string
+	onSwitchAgent func(newAgent string)
+	journal       *journal.Journal
 }
 
 // NewAdaptiveController creates a new adaptive controller.
 func NewAdaptiveController(s *store.Store, sessionID int64, logger *slog.Logger) *AdaptiveController {
 	return &AdaptiveController{store: s, sessionID: sessionID, logger: logger}
+}
+
+// SetFallbackAgent configures the fallback agent name and a callback to invoke
+// when the adaptive controller decides to switch agents.
+func (ac *AdaptiveController) SetFallbackAgent(name string, onSwitch func(newAgent string)) {
+	ac.fallbackAgent = name
+	ac.onSwitchAgent = onSwitch
+}
+
+// SetJournal configures the journal for writing agent-switch entries.
+func (ac *AdaptiveController) SetJournal(j *journal.Journal) {
+	ac.journal = j
 }
 
 // Apply processes recommendations and returns actions taken.
@@ -60,8 +78,22 @@ func (ac *AdaptiveController) Apply(recs []retro.Recommendation) []string {
 			}
 
 		case retro.RecSwitchAgent:
-			actions = append(actions, fmt.Sprintf("Recommendation: switch agent — %s", rec.Description))
-			ac.logger.Warn("agent switch recommended", "reason", rec.Description)
+			if ac.fallbackAgent != "" && ac.onSwitchAgent != nil {
+				ac.onSwitchAgent(ac.fallbackAgent)
+				actions = append(actions, fmt.Sprintf("Switched agent to %s: %s", ac.fallbackAgent, rec.Description))
+				ac.logger.Info("switched to fallback agent", "agent", ac.fallbackAgent, "reason", rec.Description)
+
+				if ac.journal != nil {
+					_ = ac.journal.Add(&store.JournalEntry{
+						Kind:       string(journal.KindAgentSwitch),
+						Summary:    fmt.Sprintf("Switched agent to %s", ac.fallbackAgent),
+						Reflection: fmt.Sprintf("Adaptive controller switched to fallback agent %q. Reason: %s", ac.fallbackAgent, rec.Description),
+					})
+				}
+			} else {
+				actions = append(actions, fmt.Sprintf("Recommendation: switch agent — %s", rec.Description))
+				ac.logger.Warn("agent switch recommended but no fallback configured", "reason", rec.Description)
+			}
 
 		case retro.RecRollback:
 			actions = append(actions, fmt.Sprintf("Recommendation: rollback — %s", rec.Description))
