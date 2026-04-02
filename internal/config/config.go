@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -158,6 +159,40 @@ func (c *Config) Validate() error {
 
 	if c.Ralph.MaxIterations < 1 {
 		return fmt.Errorf("max_iterations must be at least 1")
+	}
+
+	// Supervisor validation: numeric fields must not be negative (0 means use default).
+	if c.Supervisor.SprintSize < 0 {
+		return fmt.Errorf("supervisor sprint_size must be >= 0 (0 uses default)")
+	}
+	if c.Supervisor.MaxSprints < 0 {
+		return fmt.Errorf("supervisor max_sprints must be >= 0 (0 uses default)")
+	}
+	if c.Supervisor.MaxConsecutiveFails < 0 {
+		return fmt.Errorf("supervisor max_consecutive_fails must be >= 0 (0 uses default)")
+	}
+
+	// Supervisor validation: review_after must be a known value.
+	if c.Supervisor.ReviewAfter != "" {
+		validReviewAfter := map[string]bool{"sprint": true, "task": true, "pr": true}
+		if !validReviewAfter[c.Supervisor.ReviewAfter] {
+			return fmt.Errorf("supervisor review_after must be sprint, task, or pr (got %q)", c.Supervisor.ReviewAfter)
+		}
+	}
+
+	// Supervisor validation: budget_duration must be a valid Go duration string.
+	if c.Supervisor.BudgetDuration != "" {
+		if _, err := time.ParseDuration(c.Supervisor.BudgetDuration); err != nil {
+			return fmt.Errorf("supervisor budget_duration is not a valid duration: %w", err)
+		}
+	}
+
+	// Supervisor validation: escalation_method must be a known value.
+	if c.Supervisor.EscalationMethod != "" {
+		validEscalation := map[string]bool{"github_issue": true, "file": true, "none": true}
+		if !validEscalation[c.Supervisor.EscalationMethod] {
+			return fmt.Errorf("supervisor escalation_method must be github_issue, file, or none (got %q)", c.Supervisor.EscalationMethod)
+		}
 	}
 
 	return nil
