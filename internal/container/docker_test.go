@@ -1,6 +1,7 @@
 package container
 
 import (
+	"os"
 	"testing"
 
 	"github.com/swamp-dev/agentbox/internal/config"
@@ -153,7 +154,8 @@ func TestValidateProjectPath(t *testing.T) {
 		{"valid temp dir", t.TempDir(), false},
 		{"nonexistent", "/nonexistent/path/12345", true},
 		{"etc blocked", "/etc", true},
-		{"root blocked", "/root", true},
+		{"etc subdir blocked", "/etc/nginx", true},
+		{"root exact blocked", "/root", true},
 		{"proc blocked", "/proc", true},
 	}
 
@@ -162,6 +164,49 @@ func TestValidateProjectPath(t *testing.T) {
 			err := ValidateProjectPath(tt.path)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("ValidateProjectPath(%s) error = %v, wantErr %v", tt.path, err, tt.wantErr)
+			}
+		})
+	}
+
+	// /root subdirectories should be allowed (path must exist on disk)
+	t.Run("root subdir allowed", func(t *testing.T) {
+		subdir := t.TempDir() // creates under /tmp, but test the logic directly
+		// Create a real subdir under /root if we're running as root
+		if home, err := os.UserHomeDir(); err == nil && home == "/root" {
+			testDir := "/root/agentbox-test-validate"
+			if err := os.MkdirAll(testDir, 0o755); err == nil {
+				defer os.Remove(testDir)
+				if err := ValidateProjectPath(testDir); err != nil {
+					t.Errorf("ValidateProjectPath(%s) should be allowed for /root subdirs, got: %v", testDir, err)
+				}
+				return
+			}
+		}
+		// Fallback: just verify temp dir works
+		if err := ValidateProjectPath(subdir); err != nil {
+			t.Errorf("ValidateProjectPath(%s) error = %v", subdir, err)
+		}
+	})
+}
+
+func TestStripANSI(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{"plain text", "hello world", "hello world"},
+		{"cursor show", "\x1b[?25hhello", "hello"},
+		{"color codes", "\x1b[32mgreen\x1b[0m", "green"},
+		{"mixed", "before\x1b[1;31mred\x1b[0mafter", "beforeredafter"},
+		{"empty", "", ""},
+		{"no escapes", "just plain text\nwith newlines\n", "just plain text\nwith newlines\n"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := stripANSI(tt.input)
+			if got != tt.want {
+				t.Errorf("stripANSI(%q) = %q, want %q", tt.input, got, tt.want)
 			}
 		})
 	}

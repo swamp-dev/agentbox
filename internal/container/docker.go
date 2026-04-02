@@ -40,17 +40,17 @@ func (m *Manager) Close() error {
 
 // ContainerConfig holds all settings for creating a container.
 type ContainerConfig struct {
-	Name        string
-	Image       string
-	WorkDir     string
-	ProjectPath string
-	Env         []string
-	Cmd         []string
-	Network     string
-	Memory      int64
-	CPUs        float64
-	MountSSH         bool
-	MountGit         bool
+	Name              string
+	Image             string
+	WorkDir           string
+	ProjectPath       string
+	Env               []string
+	Cmd               []string
+	Network           string
+	Memory            int64
+	CPUs              float64
+	MountSSH          bool
+	MountGit          bool
 	MountClaudeConfig bool
 }
 
@@ -118,6 +118,16 @@ func (m *Manager) Create(ctx context.Context, cfg *ContainerConfig) (string, err
 				Type:     mount.TypeBind,
 				Source:   claudeDir,
 				Target:   "/home/agent/.claude",
+				ReadOnly: true,
+			})
+		}
+		// Claude Code stores auth/config in ~/.claude.json (separate from ~/.claude/)
+		claudeJSON := filepath.Join(home, ".claude.json")
+		if _, err := os.Stat(claudeJSON); err == nil {
+			mounts = append(mounts, mount.Mount{
+				Type:     mount.TypeBind,
+				Source:   claudeJSON,
+				Target:   "/home/agent/.claude.json",
 				ReadOnly: true,
 			})
 		}
@@ -200,12 +210,51 @@ func (m *Manager) Logs(ctx context.Context, containerID string) (string, error) 
 	}
 	defer out.Close()
 
+	// When TTY is enabled, Docker streams raw output (no multiplexing).
+	// stdcopy.StdCopy only works with non-TTY multiplexed streams.
+	inspect, inspectErr := m.client.ContainerInspect(ctx, containerID)
+	if inspectErr == nil && inspect.Config != nil && inspect.Config.Tty {
+		raw, readErr := io.ReadAll(out)
+		if readErr != nil {
+			return "", fmt.Errorf("reading container logs: %w", readErr)
+		}
+		return stripANSI(string(raw)), nil
+	}
+
 	var stdout, stderr strings.Builder
 	if _, err := stdcopy.StdCopy(&stdout, &stderr, out); err != nil {
 		return "", fmt.Errorf("reading container logs: %w", err)
 	}
 
 	return stdout.String() + stderr.String(), nil
+}
+
+// stripANSI removes ANSI escape codes from a string.
+func stripANSI(s string) string {
+	var result strings.Builder
+	i := 0
+	for i < len(s) {
+		if s[i] == '\x1b' {
+			// Skip ESC [ ... <final byte> sequences
+			if i+1 < len(s) && s[i+1] == '[' {
+				j := i + 2
+				for j < len(s) && ((s[j] >= '0' && s[j] <= '9') || s[j] == ';' || s[j] == '?') {
+					j++
+				}
+				if j < len(s) {
+					j++ // skip final byte
+				}
+				i = j
+				continue
+			}
+			// Skip other ESC sequences (ESC + one byte)
+			i += 2
+			continue
+		}
+		result.WriteByte(s[i])
+		i++
+	}
+	return result.String()
 }
 
 // Attach connects to a running container's stdin/stdout/stderr.
@@ -282,11 +331,15 @@ func ParseCPUs(cpus string) (float64, error) {
 	return value, nil
 }
 
-// dangerousPaths are system directories that should never be mounted.
-var dangerousPaths = []string{
-	"/etc", "/root", "/sys", "/proc", "/dev", "/boot",
+// systemPaths blocks the path and all subdirectories from being mounted.
+var systemPaths = []string{
+	"/etc", "/sys", "/proc", "/dev", "/boot",
 	"/var/run", "/var/log", "/usr", "/bin", "/sbin", "/lib",
 }
+
+// exactBlockPaths blocks only the exact path (subdirectories are allowed).
+// /root itself is dangerous to mount, but /root/projects is fine.
+var exactBlockPaths = []string{"/root"}
 
 // ValidateProjectPath checks that the path is safe to mount.
 func ValidateProjectPath(projectPath string) error {
@@ -303,8 +356,14 @@ func ValidateProjectPath(projectPath string) error {
 		return fmt.Errorf("project path is not a directory: %s", absPath)
 	}
 
-	for _, dangerous := range dangerousPaths {
-		if absPath == dangerous || strings.HasPrefix(absPath, dangerous+"/") {
+	for _, blocked := range systemPaths {
+		if absPath == blocked || strings.HasPrefix(absPath, blocked+"/") {
+			return fmt.Errorf("refusing to mount system directory: %s", absPath)
+		}
+	}
+
+	for _, blocked := range exactBlockPaths {
+		if absPath == blocked {
 			return fmt.Errorf("refusing to mount system directory: %s", absPath)
 		}
 	}
@@ -334,17 +393,17 @@ func ConfigToContainerConfig(cfg *config.Config, projectPath string, cmd []strin
 	}
 
 	return &ContainerConfig{
-		Name:        fmt.Sprintf("agentbox-%s", cfg.Project.Name),
-		Image:       ImageName(cfg.Docker.Image),
-		WorkDir:     "/workspace",
-		ProjectPath: absPath,
-		Env:         env,
-		Cmd:         cmd,
-		Network:     cfg.Docker.Network,
-		Memory:      memory,
-		CPUs:        cpus,
-		MountSSH:         true,
-		MountGit:         true,
+		Name:              fmt.Sprintf("agentbox-%s", cfg.Project.Name),
+		Image:             ImageName(cfg.Docker.Image),
+		WorkDir:           "/workspace",
+		ProjectPath:       absPath,
+		Env:               env,
+		Cmd:               cmd,
+		Network:           cfg.Docker.Network,
+		Memory:            memory,
+		CPUs:              cpus,
+		MountSSH:          true,
+		MountGit:          true,
 		MountClaudeConfig: cfg.Agent.Name == "claude-cli",
 	}, nil
 }

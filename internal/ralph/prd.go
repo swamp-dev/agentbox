@@ -10,20 +10,20 @@ import (
 
 // PRD represents a Product Requirements Document with tasks.
 type PRD struct {
-	Name        string     `json:"name"`
-	Description string     `json:"description"`
-	Tasks       []Task     `json:"tasks"`
-	Metadata    PRDMeta    `json:"metadata,omitempty"`
+	Name        string  `json:"name"`
+	Description string  `json:"description"`
+	Tasks       []Task  `json:"tasks"`
+	Metadata    PRDMeta `json:"metadata,omitempty"`
 }
 
 // PRDMeta holds metadata about the PRD execution.
 type PRDMeta struct {
-	CreatedAt   time.Time `json:"created_at,omitempty"`
-	UpdatedAt   time.Time `json:"updated_at,omitempty"`
-	TotalTasks  int       `json:"total_tasks"`
-	Completed   int       `json:"completed"`
-	InProgress  int       `json:"in_progress"`
-	Pending     int       `json:"pending"`
+	CreatedAt  time.Time `json:"created_at,omitempty"`
+	UpdatedAt  time.Time `json:"updated_at,omitempty"`
+	TotalTasks int       `json:"total_tasks"`
+	Completed  int       `json:"completed"`
+	InProgress int       `json:"in_progress"`
+	Pending    int       `json:"pending"`
 }
 
 // Task represents a single task in the PRD.

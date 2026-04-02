@@ -500,11 +500,11 @@ func TestGeneratePRBody(t *testing.T) {
 	}
 
 	checks := []string{
-		"1/3",           // completed/total
-		"Setup auth",    // completed task
-		"Broken task",   // failed task
-		"Unresolved",    // section header
-		"agentbox",      // footer
+		"1/3",         // completed/total
+		"Setup auth",  // completed task
+		"Broken task", // failed task
+		"Unresolved",  // section header
+		"agentbox",    // footer
 	}
 	for _, check := range checks {
 		if !strings.Contains(body, check) {

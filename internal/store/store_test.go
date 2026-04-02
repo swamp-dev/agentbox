@@ -296,12 +296,12 @@ func TestQualitySnapshots(t *testing.T) {
 	for i := 1; i <= 6; i++ {
 		pass := i > 3
 		if err := s.RecordQuality(&QualitySnapshot{
-			SessionID:   sessionID,
-			Iteration:   i,
-			OverallPass: pass,
-			TestTotal:   10,
-			TestPassed:  5 + i,
-			TestFailed:  5 - i,
+			SessionID:       sessionID,
+			Iteration:       i,
+			OverallPass:     pass,
+			TestTotal:       10,
+			TestPassed:      5 + i,
+			TestFailed:      5 - i,
 			FailedTestsJSON: `["test_a"]`,
 		}); err != nil {
 			t.Fatalf("RecordQuality(%d): %v", i, err)
@@ -871,7 +871,6 @@ func TestLatestSession_Empty(t *testing.T) {
 		t.Fatalf("expected error for empty sessions, got session %+v", sess)
 	}
 }
-
 
 func TestQualityTrend_NoSnapshots(t *testing.T) {
 	s := openTestStore(t)

@@ -12,9 +12,9 @@ import (
 // Config holds supervisor-specific configuration.
 type Config struct {
 	// Sprint settings.
-	SprintSize          int           `yaml:"sprint_size" json:"sprint_size"`
-	MaxSprints          int           `yaml:"max_sprints" json:"max_sprints"`
-	MaxConsecutiveFails int           `yaml:"max_consecutive_fails" json:"max_consecutive_fails"`
+	SprintSize          int `yaml:"sprint_size" json:"sprint_size"`
+	MaxSprints          int `yaml:"max_sprints" json:"max_sprints"`
+	MaxConsecutiveFails int `yaml:"max_consecutive_fails" json:"max_consecutive_fails"`
 
 	// Agent settings.
 	Agent         string `yaml:"agent" json:"agent"`
@@ -22,8 +22,8 @@ type Config struct {
 	FallbackAgent string `yaml:"fallback_agent" json:"fallback_agent"`
 
 	// Review settings.
-	ReviewAfter    string `yaml:"review_after" json:"review_after"`       // "sprint", "task", "pr"
-	MaxReviewRounds int   `yaml:"max_review_rounds" json:"max_review_rounds"`
+	ReviewAfter     string `yaml:"review_after" json:"review_after"` // "sprint", "task", "pr"
+	MaxReviewRounds int    `yaml:"max_review_rounds" json:"max_review_rounds"`
 
 	// Budget.
 	Budget metrics.Budget `yaml:"budget" json:"budget"`

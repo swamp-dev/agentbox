@@ -17,21 +17,21 @@ const (
 
 // Task represents a unit of work with dependencies and execution history.
 type Task struct {
-	ID                 string              `json:"id"`
-	Title              string              `json:"title"`
-	Description        string              `json:"description"`
-	Status             TaskStatus          `json:"status"`
-	Priority           int                 `json:"priority"`
-	Complexity         int                 `json:"complexity"`
-	ParentID           string              `json:"parent_id,omitempty"`
-	DependsOn          []string            `json:"depends_on,omitempty"`
-	MaxAttempts        int                 `json:"max_attempts"`
-	ContextNotes       string              `json:"context_notes,omitempty"`
+	ID                 string               `json:"id"`
+	Title              string               `json:"title"`
+	Description        string               `json:"description"`
+	Status             TaskStatus           `json:"status"`
+	Priority           int                  `json:"priority"`
+	Complexity         int                  `json:"complexity"`
+	ParentID           string               `json:"parent_id,omitempty"`
+	DependsOn          []string             `json:"depends_on,omitempty"`
+	MaxAttempts        int                  `json:"max_attempts"`
+	ContextNotes       string               `json:"context_notes,omitempty"`
 	AcceptanceCriteria []AcceptanceCriteria `json:"acceptance_criteria,omitempty"`
-	Tags               []string            `json:"tags,omitempty"`
-	Attempts           []Attempt           `json:"attempts,omitempty"`
-	CreatedAt          time.Time           `json:"created_at"`
-	CompletedAt        *time.Time          `json:"completed_at,omitempty"`
+	Tags               []string             `json:"tags,omitempty"`
+	Attempts           []Attempt            `json:"attempts,omitempty"`
+	CreatedAt          time.Time            `json:"created_at"`
+	CompletedAt        *time.Time           `json:"completed_at,omitempty"`
 }
 
 // AcceptanceCriteria defines a condition for task completion.
