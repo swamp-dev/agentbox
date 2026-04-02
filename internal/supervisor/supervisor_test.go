@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -1225,6 +1226,7 @@ func TestApply_SplitTask(t *testing.T) {
 // It tracks call order for assertions.
 type ScriptedAgentRunner struct {
 	results map[string]*ralph.IterationResult
+	mu      sync.Mutex
 	calls   []string // task IDs in order of execution
 }
 
@@ -1232,8 +1234,19 @@ func NewScriptedAgentRunner(results map[string]*ralph.IterationResult) *Scripted
 	return &ScriptedAgentRunner{results: results}
 }
 
+// Calls returns a copy of the recorded task IDs under lock.
+func (s *ScriptedAgentRunner) Calls() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]string, len(s.calls))
+	copy(out, s.calls)
+	return out
+}
+
 func (s *ScriptedAgentRunner) RunTask(_ context.Context, task *ralph.Task, _ string) *ralph.IterationResult {
+	s.mu.Lock()
 	s.calls = append(s.calls, task.ID)
+	s.mu.Unlock()
 	if r, ok := s.results[task.ID]; ok {
 		return r
 	}
@@ -1303,6 +1316,9 @@ func TestFullSprintLifecycle(t *testing.T) {
 	})
 
 	// Phase 2: Sprint loop.
+	// NOTE: This loop intentionally mirrors the structure of supervisor.go:Run()
+	// (setup → sprint loop → finalize). If Run()'s loop condition or phase
+	// ordering changes, this test must be kept in sync.
 	iteration := 1
 	for sprint := 1; sprint <= cfg.MaxSprints; sprint++ {
 		if sup.taskDB.IsComplete() {
@@ -1323,6 +1339,9 @@ func TestFullSprintLifecycle(t *testing.T) {
 		if result.BudgetExceeded {
 			t.Fatal("unexpected budget exceeded")
 		}
+		if result.AbortedEarly {
+			t.Fatalf("unexpected early abort in sprint %d: %s", sprint, result.AbortReason)
+		}
 	}
 
 	// Phase 4: Finalize.
@@ -1341,9 +1360,16 @@ func TestFullSprintLifecycle(t *testing.T) {
 		t.Errorf("expected session status 'completed', got %q", sess.Status)
 	}
 
-	// 2. Tasks were executed (verify scripted runner was called).
-	if len(scripted.calls) < 3 {
-		t.Errorf("expected at least 3 task executions, got %d", len(scripted.calls))
+	// 2. Tasks were executed (verify each expected task was called).
+	wantCalled := map[string]bool{"t-1": true, "t-2": true, "t-3": true}
+	gotCalled := map[string]bool{}
+	for _, id := range scripted.Calls() {
+		gotCalled[id] = true
+	}
+	for id := range wantCalled {
+		if !gotCalled[id] {
+			t.Errorf("expected task %s to be called, but it wasn't", id)
+		}
 	}
 
 	// 3. Verify task statuses in store.
