@@ -290,3 +290,76 @@ func TestServerNotification(t *testing.T) {
 		t.Errorf("expected no response for notification, got %s", stdout.String())
 	}
 }
+
+func TestServerRunFullConversation(t *testing.T) {
+	// Simulate a realistic MCP session: initialize -> tools/list -> tools/call -> EOF
+	input := `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}}}` + "\n" +
+		`{"jsonrpc":"2.0","method":"notifications/initialized"}` + "\n" +
+		`{"jsonrpc":"2.0","id":2,"method":"tools/list"}` + "\n" +
+		`{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"agentbox_status","arguments":{}}}` + "\n"
+
+	stdin := strings.NewReader(input)
+	var stdout bytes.Buffer
+
+	srv := NewServer(stdin, &stdout, nil)
+	err := srv.Run()
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+
+	// Decode all responses — should be 3 (notification produces none)
+	dec := json.NewDecoder(&stdout)
+	var responses []JSONRPCResponse
+	for dec.More() {
+		var resp JSONRPCResponse
+		if err := dec.Decode(&resp); err != nil {
+			break
+		}
+		responses = append(responses, resp)
+	}
+
+	if len(responses) != 3 {
+		t.Fatalf("expected 3 responses, got %d", len(responses))
+	}
+
+	// Verify IDs match requests
+	if string(responses[0].ID) != "1" {
+		t.Errorf("response[0] ID = %s, want 1", string(responses[0].ID))
+	}
+	if string(responses[1].ID) != "2" {
+		t.Errorf("response[1] ID = %s, want 2", string(responses[1].ID))
+	}
+	if string(responses[2].ID) != "3" {
+		t.Errorf("response[2] ID = %s, want 3", string(responses[2].ID))
+	}
+
+	// None should be errors
+	for i, resp := range responses {
+		if resp.Error != nil {
+			t.Errorf("response[%d] has unexpected error: %v", i, resp.Error)
+		}
+	}
+}
+
+func TestServerParseError(t *testing.T) {
+	input := `{invalid json}` + "\n"
+	stdin := strings.NewReader(input)
+	var stdout bytes.Buffer
+
+	srv := NewServer(stdin, &stdout, nil)
+	if err := srv.processOne(); err != nil {
+		t.Fatalf("processOne() error = %v", err)
+	}
+
+	var resp JSONRPCResponse
+	if err := json.NewDecoder(&stdout).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+
+	if resp.Error == nil {
+		t.Fatal("expected parse error")
+	}
+	if resp.Error.Code != -32700 {
+		t.Errorf("expected error code -32700, got %d", resp.Error.Code)
+	}
+}

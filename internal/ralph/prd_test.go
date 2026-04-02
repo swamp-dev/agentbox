@@ -178,3 +178,59 @@ func TestLoadPRDInvalid(t *testing.T) {
 		t.Error("expected error for invalid JSON")
 	}
 }
+
+func TestMarkTaskInProgress(t *testing.T) {
+	prd := CreateDefaultPRD("test")
+
+	if err := prd.MarkTaskInProgress("task-1"); err != nil {
+		t.Fatalf("MarkTaskInProgress() error = %v", err)
+	}
+
+	task := prd.GetTask("task-1")
+	if task.Status != "in_progress" {
+		t.Errorf("expected status in_progress, got %s", task.Status)
+	}
+
+	if prd.Metadata.InProgress != 1 {
+		t.Errorf("expected 1 in_progress in metadata, got %d", prd.Metadata.InProgress)
+	}
+
+	// Non-existent task
+	if err := prd.MarkTaskInProgress("nonexistent"); err == nil {
+		t.Error("expected error for non-existent task")
+	}
+}
+
+func TestExportTasks(t *testing.T) {
+	prd := &PRD{
+		Name: "test",
+		Tasks: []Task{
+			{
+				ID:     "task-1",
+				Title:  "Parent",
+				Status: "pending",
+				Subtasks: []Task{
+					{ID: "task-1.1", Title: "Child", Status: "pending"},
+				},
+			},
+			{ID: "task-2", Title: "Standalone", Status: "completed"},
+		},
+	}
+
+	tasks := prd.ExportTasks()
+	if len(tasks) != 3 {
+		t.Fatalf("expected 3 tasks (flattened), got %d", len(tasks))
+	}
+
+	ids := make([]string, len(tasks))
+	for i, t := range tasks {
+		ids[i] = t.ID
+	}
+	// Should be depth-first: task-1, task-1.1, task-2
+	expected := []string{"task-1", "task-1.1", "task-2"}
+	for i, want := range expected {
+		if ids[i] != want {
+			t.Errorf("task[%d] = %s, want %s", i, ids[i], want)
+		}
+	}
+}
