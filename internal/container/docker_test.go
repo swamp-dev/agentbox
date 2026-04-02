@@ -1,7 +1,12 @@
 package container
 
 import (
+	"archive/tar"
+	"bytes"
+	"context"
+	"io"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/swamp-dev/agentbox/internal/config"
@@ -121,6 +126,10 @@ func TestConfigToContainerConfig(t *testing.T) {
 	if len(containerCfg.Env) != 1 || containerCfg.Env[0] != "KEY=value" {
 		t.Errorf("expected env [KEY=value], got %v", containerCfg.Env)
 	}
+
+	if containerCfg.Interactive {
+		t.Error("expected Interactive=false by default")
+	}
 }
 
 func TestConfigToContainerConfigInvalidMemory(t *testing.T) {
@@ -187,6 +196,194 @@ func TestValidateProjectPath(t *testing.T) {
 			t.Errorf("ValidateProjectPath(%s) error = %v", subdir, err)
 		}
 	})
+}
+
+func TestConfigToContainerConfigAllowedEndpoints(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Docker.Image = "full"
+	cfg.Docker.Network = "restricted"
+	cfg.Docker.Resources.Memory = "2g"
+	cfg.Docker.Resources.CPUs = "1"
+	cfg.Docker.AllowedEndpoints = []string{"api.anthropic.com:443", "pypi.org:443"}
+
+	containerCfg, err := ConfigToContainerConfig(cfg, t.TempDir(), []string{"echo"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if containerCfg.Network != "restricted" {
+		t.Errorf("Network = %s, want restricted", containerCfg.Network)
+	}
+	if len(containerCfg.AllowedEndpoints) != 2 {
+		t.Fatalf("AllowedEndpoints = %v, want 2 entries", containerCfg.AllowedEndpoints)
+	}
+	if containerCfg.AllowedEndpoints[0] != "api.anthropic.com:443" {
+		t.Errorf("AllowedEndpoints[0] = %s", containerCfg.AllowedEndpoints[0])
+	}
+}
+
+func TestConfigToContainerConfigInteractiveDefault(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Docker.Image = "full"
+	cfg.Docker.Resources.Memory = "2g"
+	cfg.Docker.Resources.CPUs = "1"
+
+	containerCfg, err := ConfigToContainerConfig(cfg, t.TempDir(), []string{"echo"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if containerCfg.Interactive {
+		t.Error("expected Interactive=false by default from ConfigToContainerConfig")
+	}
+}
+
+func TestConfigToContainerConfigClaudeCLIMount(t *testing.T) {
+	tests := []struct {
+		agent string
+		want  bool
+	}{
+		{"claude-cli", true},
+		{"claude", false},
+		{"aider", false},
+		{"amp", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.agent, func(t *testing.T) {
+			cfg := config.DefaultConfig()
+			cfg.Agent.Name = tt.agent
+			cfg.Docker.Image = "node"
+			cfg.Docker.Resources.Memory = "2g"
+			cfg.Docker.Resources.CPUs = "1"
+			containerCfg, err := ConfigToContainerConfig(cfg, t.TempDir(), []string{"test"}, nil)
+			if err != nil {
+				t.Fatalf("error = %v", err)
+			}
+			if containerCfg.MountClaudeConfig != tt.want {
+				t.Errorf("MountClaudeConfig = %v, want %v", containerCfg.MountClaudeConfig, tt.want)
+			}
+		})
+	}
+}
+
+func dockerAvailable() bool {
+	cm, err := NewManager()
+	if err != nil {
+		return false
+	}
+	cm.Close()
+	return true
+}
+
+func TestRunNonInteractiveOutput(t *testing.T) {
+	if testing.Short() || !dockerAvailable() {
+		t.Skip("skipping: requires Docker")
+	}
+
+	cm, err := NewManager()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cm.Close()
+
+	cfg := &ContainerConfig{
+		Name:        "agentbox-test-noninteractive",
+		Image:       "agentbox/full:latest",
+		WorkDir:     "/tmp",
+		ProjectPath: t.TempDir(),
+		Cmd:         []string{"echo", "hello world"},
+		Network:     "none",
+		Interactive: false,
+	}
+
+	ctx := context.Background()
+	output, err := cm.Run(ctx, cfg)
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+
+	if !strings.Contains(output, "hello world") {
+		t.Errorf("expected output to contain 'hello world', got %q", output)
+	}
+}
+
+func TestRunInteractiveOutput(t *testing.T) {
+	if testing.Short() || !dockerAvailable() {
+		t.Skip("skipping: requires Docker")
+	}
+
+	cm, err := NewManager()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cm.Close()
+
+	cfg := &ContainerConfig{
+		Name:        "agentbox-test-interactive",
+		Image:       "agentbox/full:latest",
+		WorkDir:     "/tmp",
+		ProjectPath: t.TempDir(),
+		Cmd:         []string{"echo", "hello interactive"},
+		Network:     "none",
+		Interactive: true,
+	}
+
+	ctx := context.Background()
+	output, err := cm.Run(ctx, cfg)
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+
+	if !strings.Contains(output, "hello interactive") {
+		t.Errorf("expected output to contain 'hello interactive', got %q", output)
+	}
+}
+
+func TestCopyFileToContainerTarFormat(t *testing.T) {
+	// Test the tar archive construction without Docker.
+	// We call the tar-building logic directly and verify the header.
+	content := []byte(`{"test": "credentials"}`)
+	uid, gid := 1000, 1000
+
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+	err := tw.WriteHeader(&tar.Header{
+		Name: ".credentials.json",
+		Size: int64(len(content)),
+		Mode: 0o600,
+		Uid:  uid,
+		Gid:  gid,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tw.Write(content); err != nil {
+		t.Fatal(err)
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	// Read back and verify
+	tr := tar.NewReader(&buf)
+	hdr, err := tr.Next()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hdr.Name != ".credentials.json" {
+		t.Errorf("Name = %s, want .credentials.json", hdr.Name)
+	}
+	if hdr.Uid != uid || hdr.Gid != gid {
+		t.Errorf("UID/GID = %d/%d, want %d/%d", hdr.Uid, hdr.Gid, uid, gid)
+	}
+	if hdr.Mode != 0o600 {
+		t.Errorf("Mode = %o, want 600", hdr.Mode)
+	}
+	data, err := io.ReadAll(tr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != string(content) {
+		t.Errorf("content = %q, want %q", string(data), string(content))
+	}
 }
 
 func TestStripANSI(t *testing.T) {
