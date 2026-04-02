@@ -54,7 +54,9 @@ Run a single agent task in a sandboxed Docker container.
 | `agent` | string | yes | Agent to use (claude, claude-cli, amp, aider) |
 | `prompt` | string | yes | Prompt to send to the agent |
 | `image` | string | no | Docker image type (node, python, go, rust, full) |
-| `network` | string | no | Network mode (none, bridge, host) |
+| `network` | string | no | Network mode (none, bridge, host, restricted) |
+| `allowed_endpoints` | string[] | no | Allowed host:port endpoints for restricted network mode |
+| `timeout` | integer | no | Timeout in minutes (default: 30, max: 240) |
 
 ### `agentbox_ralph_start`
 
@@ -79,6 +81,8 @@ Start an autonomous sprint. Returns a session ID immediately (async).
 | `agent` | string | no | Agent to use (default: claude) |
 | `sprint_size` | integer | no | Tasks per sprint (default: 5) |
 | `max_sprints` | integer | no | Max sprints (default: 20) |
+| `network` | string | no | Network mode (none, bridge, host, restricted) |
+| `allowed_endpoints` | string[] | no | Allowed host:port endpoints for restricted network mode |
 
 ### `agentbox_status`
 
@@ -95,8 +99,9 @@ Read dev diary entries for a session.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `session_id` | integer | yes | Session ID |
+| `session_id` | string | yes | Session ID |
 | `limit` | integer | no | Max entries to return |
+| `project_dir` | string | no | Project directory for store lookup |
 
 ### `agentbox_task_list`
 
@@ -114,6 +119,7 @@ Monitor an active sprint.
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `session_id` | string | yes | Session ID of the sprint |
+| `project_dir` | string | no | Project directory for store lookup |
 
 ## Protocol Details
 

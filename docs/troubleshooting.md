@@ -52,6 +52,27 @@ make docker-build
 
 ---
 
+### Container name conflict
+
+```
+Error: container name "/agentbox-my-project" is already in use
+```
+
+A previous run left a container behind. Remove it:
+
+```bash
+docker rm -f agentbox-my-project
+```
+
+To also clean up any leftover proxy containers and networks from restricted mode:
+
+```bash
+docker ps -a --filter "label=managed-by=agentbox" -q | xargs -r docker rm -f
+docker network prune -f --filter "label=managed-by=agentbox"
+```
+
+---
+
 ## API Key Issues
 
 Each agent requires specific API keys passed via environment variables:
@@ -75,6 +96,22 @@ export ANTHROPIC_API_KEY=sk-ant-...
 ```
 
 For persistent configuration, add it to your shell profile (`~/.bashrc`, `~/.zshrc`, etc.).
+
+### Using claude-cli (subscription auth)
+
+The `claude-cli` agent uses your Claude Pro/Max subscription instead of an API key. It requires:
+
+1. **Claude Code installed and logged in** on the host:
+   ```bash
+   claude --version  # verify installed
+   claude /login     # authenticate if needed
+   ```
+
+2. **Credentials file present** at `~/.claude/.credentials.json`. Agentbox copies this into the container automatically.
+
+3. **Network access** — `claude-cli` auto-switches to `restricted` egress mode (allows only `api.anthropic.com:443`).
+
+If you see `Not logged in · Please run /login`, your credentials are missing or expired. Run `claude /login` on the host to refresh them.
 
 ### Wrong key for agent
 
