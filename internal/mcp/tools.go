@@ -29,6 +29,10 @@ const (
 	// defaultAsyncTimeout is the maximum time async operations (ralph, sprint)
 	// can run before being cancelled.
 	defaultAsyncTimeout = 4 * time.Hour
+
+	// maxSessions is the maximum number of completed/failed sessions to retain
+	// in memory. When exceeded, the oldest completed sessions are evicted.
+	maxSessions = 100
 )
 
 // ToolHandler dispatches MCP tool calls to implementations.
@@ -52,6 +56,22 @@ func NewToolHandler(logger *slog.Logger) *ToolHandler {
 	return &ToolHandler{
 		sessions: make(map[string]*asyncSession),
 		logger:   logger,
+	}
+}
+
+// evictSessions removes the oldest completed/failed sessions when the map
+// exceeds maxSessions. Must be called with h.mu held.
+func (h *ToolHandler) evictSessions() {
+	if len(h.sessions) <= maxSessions {
+		return
+	}
+	for id, s := range h.sessions {
+		if s.Status == "completed" || s.Status == "failed" {
+			delete(h.sessions, id)
+		}
+		if len(h.sessions) <= maxSessions {
+			return
+		}
 	}
 }
 
@@ -80,12 +100,13 @@ func (h *ToolHandler) Call(name string, argsJSON json.RawMessage) *ToolCallResul
 // --- agentbox_run ---
 
 type runArgs struct {
-	ProjectDir string `json:"project_dir"`
-	Agent      string `json:"agent"`
-	Prompt     string `json:"prompt"`
-	Image      string `json:"image,omitempty"`
-	Network    string `json:"network,omitempty"`
-	Timeout    int    `json:"timeout,omitempty"` // timeout in minutes (default: 30)
+	ProjectDir       string   `json:"project_dir"`
+	Agent            string   `json:"agent"`
+	Prompt           string   `json:"prompt"`
+	Image            string   `json:"image,omitempty"`
+	Network          string   `json:"network,omitempty"`
+	AllowedEndpoints []string `json:"allowed_endpoints,omitempty"`
+	Timeout          int      `json:"timeout,omitempty"` // timeout in minutes (default: 30)
 }
 
 func (h *ToolHandler) handleRun(argsJSON json.RawMessage) *ToolCallResult {
@@ -98,6 +119,11 @@ func (h *ToolHandler) handleRun(argsJSON json.RawMessage) *ToolCallResult {
 		return textError("project_dir, agent, and prompt are required")
 	}
 
+	maxTimeoutMinutes := int(defaultAsyncTimeout / time.Minute)
+	if args.Timeout > maxTimeoutMinutes {
+		return textError(fmt.Sprintf("timeout %d minutes exceeds maximum of %d minutes", args.Timeout, maxTimeoutMinutes))
+	}
+
 	if err := agent.ValidateAPIKey(args.Agent); err != nil {
 		return textError(fmt.Sprintf("API key validation failed: %v", err))
 	}
@@ -107,6 +133,11 @@ func (h *ToolHandler) handleRun(argsJSON json.RawMessage) *ToolCallResult {
 		return textError(fmt.Sprintf("loading config: %v", err))
 	}
 
+	ag, err := agent.New(args.Agent)
+	if err != nil {
+		return textError(fmt.Sprintf("creating agent: %v", err))
+	}
+
 	cfg.Agent.Name = args.Agent
 	if args.Image != "" {
 		cfg.Docker.Image = args.Image
@@ -114,25 +145,20 @@ func (h *ToolHandler) handleRun(argsJSON json.RawMessage) *ToolCallResult {
 	if args.Network != "" {
 		cfg.Docker.Network = args.Network
 	}
+	if len(args.AllowedEndpoints) > 0 {
+		cfg.Docker.AllowedEndpoints = args.AllowedEndpoints
+	}
 	if args.Agent == "claude-cli" && cfg.Docker.Network == "none" {
 		cfg.Docker.Network = "restricted"
 	}
 
 	// Set agent-default endpoints for restricted mode.
 	if cfg.Docker.Network == "restricted" && len(cfg.Docker.AllowedEndpoints) == 0 {
-		ag, _ := agent.New(args.Agent)
-		if ag != nil {
-			cfg.Docker.AllowedEndpoints = ag.AllowedEndpoints()
-		}
+		cfg.Docker.AllowedEndpoints = ag.AllowedEndpoints()
 	}
 
 	if err := cfg.Validate(); err != nil {
 		return textError(fmt.Sprintf("invalid configuration: %v", err))
-	}
-
-	ag, err := agent.New(args.Agent)
-	if err != nil {
-		return textError(fmt.Sprintf("creating agent: %v", err))
 	}
 
 	cm, err := container.NewManager()
@@ -152,9 +178,6 @@ func (h *ToolHandler) handleRun(argsJSON json.RawMessage) *ToolCallResult {
 	timeout := defaultRunTimeout
 	if args.Timeout > 0 {
 		timeout = time.Duration(args.Timeout) * time.Minute
-	}
-	if timeout > defaultAsyncTimeout {
-		return textError(fmt.Sprintf("timeout %d minutes exceeds maximum of %d minutes", args.Timeout, int(defaultAsyncTimeout.Minutes())))
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
@@ -217,6 +240,7 @@ func (h *ToolHandler) handleRalphStart(argsJSON json.RawMessage) *ToolCallResult
 	sessionID := uuid.New().String()
 
 	h.mu.Lock()
+	h.evictSessions()
 	h.sessions[sessionID] = &asyncSession{ID: sessionID, Status: "running"}
 	h.mu.Unlock()
 
@@ -260,12 +284,14 @@ func (h *ToolHandler) handleRalphStart(argsJSON json.RawMessage) *ToolCallResult
 // --- agentbox_sprint_start ---
 
 type sprintStartArgs struct {
-	ProjectDir string `json:"project_dir,omitempty"`
-	RepoURL    string `json:"repo_url,omitempty"`
-	PRDFile    string `json:"prd_file,omitempty"`
-	Agent      string `json:"agent,omitempty"`
-	SprintSize int    `json:"sprint_size,omitempty"`
-	MaxSprints int    `json:"max_sprints,omitempty"`
+	ProjectDir       string   `json:"project_dir,omitempty"`
+	RepoURL          string   `json:"repo_url,omitempty"`
+	PRDFile          string   `json:"prd_file,omitempty"`
+	Agent            string   `json:"agent,omitempty"`
+	SprintSize       int      `json:"sprint_size,omitempty"`
+	MaxSprints       int      `json:"max_sprints,omitempty"`
+	Network          string   `json:"network,omitempty"`
+	AllowedEndpoints []string `json:"allowed_endpoints,omitempty"`
 }
 
 func (h *ToolHandler) handleSprintStart(argsJSON json.RawMessage) *ToolCallResult {
@@ -293,10 +319,26 @@ func (h *ToolHandler) handleSprintStart(argsJSON json.RawMessage) *ToolCallResul
 	if args.MaxSprints > 0 {
 		cfg.MaxSprints = args.MaxSprints
 	}
+	if args.Network != "" {
+		cfg.DockerNetwork = args.Network
+	}
+	if len(args.AllowedEndpoints) > 0 {
+		cfg.DockerAllowedEndpoints = args.AllowedEndpoints
+	}
+
+	// Set agent-default endpoints for restricted mode.
+	if cfg.DockerNetwork == "restricted" && len(cfg.DockerAllowedEndpoints) == 0 {
+		ag, err := agent.New(cfg.Agent)
+		if err != nil {
+			return textError(fmt.Sprintf("creating agent for endpoint defaults: %v", err))
+		}
+		cfg.DockerAllowedEndpoints = ag.AllowedEndpoints()
+	}
 
 	sessionID := uuid.New().String()
 
 	h.mu.Lock()
+	h.evictSessions()
 	h.sessions[sessionID] = &asyncSession{ID: sessionID, Status: "running"}
 	h.mu.Unlock()
 
@@ -683,9 +725,16 @@ func AllTools() []ToolDefinition {
 						"type":        "string",
 						"description": "Network mode (none, bridge, host, restricted)",
 					},
+					"allowed_endpoints": map[string]interface{}{
+						"type": "array",
+						"items": map[string]interface{}{
+							"type": "string",
+						},
+						"description": "Allowed host:port endpoints for restricted network mode",
+					},
 					"timeout": map[string]interface{}{
 						"type":        "integer",
-						"description": "Timeout in minutes (default: 30). Container is killed if exceeded.",
+						"description": "Timeout in minutes (default: 30, max: 240). 0 or omitted uses the default. Container is killed if exceeded.",
 					},
 				},
 				"required": []string{"project_dir", "agent", "prompt"},
@@ -746,6 +795,17 @@ func AllTools() []ToolDefinition {
 					"max_sprints": map[string]interface{}{
 						"type":        "integer",
 						"description": "Maximum number of sprints (default: 20)",
+					},
+					"network": map[string]interface{}{
+						"type":        "string",
+						"description": "Network mode (none, bridge, host, restricted)",
+					},
+					"allowed_endpoints": map[string]interface{}{
+						"type": "array",
+						"items": map[string]interface{}{
+							"type": "string",
+						},
+						"description": "Allowed host:port endpoints for restricted network mode",
 					},
 				},
 			},
