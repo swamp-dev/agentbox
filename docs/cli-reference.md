@@ -68,6 +68,9 @@ agentbox ralph
 # Use a custom PRD with more iterations
 agentbox ralph --prd tasks/sprint-1.json --max-iterations 20
 
+# Use Claude CLI with subscription auth (no API key needed)
+agentbox ralph --agent claude-cli
+
 # Use Aider without auto-commit
 agentbox ralph --agent aider --auto-commit=false
 
