@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/mount"
@@ -209,18 +210,32 @@ func (m *Manager) Run(ctx context.Context, cfg *ContainerConfig) (string, error)
 	if err != nil {
 		return "", err
 	}
-	defer func() { _ = m.Remove(ctx, containerID) }()
+	defer func() {
+		// Use a fresh context for cleanup — the original ctx may be cancelled.
+		rmCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		_ = m.Remove(rmCtx, containerID)
+	}()
 
 	return m.Wait(ctx, containerID)
 }
 
 // Wait blocks until the container exits and returns its output.
+// It respects context cancellation — if the context is cancelled or times out,
+// the container is killed and partial logs are returned.
 func (m *Manager) Wait(ctx context.Context, containerID string) (string, error) {
 	statusCh, errCh := m.client.ContainerWait(ctx, containerID, container.WaitConditionNotRunning)
 
 	select {
+	case <-ctx.Done():
+		return m.killAndCollectLogs(containerID, ctx.Err())
 	case err := <-errCh:
 		if err != nil {
+			// ContainerWait can surface context cancellation via errCh rather
+			// than ctx.Done() — check ctx.Err() to ensure we still clean up.
+			if ctx.Err() != nil {
+				return m.killAndCollectLogs(containerID, ctx.Err())
+			}
 			return "", fmt.Errorf("waiting for container: %w", err)
 		}
 	case status := <-statusCh:
@@ -231,6 +246,16 @@ func (m *Manager) Wait(ctx context.Context, containerID string) (string, error) 
 	}
 
 	return m.Logs(ctx, containerID)
+}
+
+// killAndCollectLogs stops a container and returns whatever logs are available.
+// Used when a context timeout or cancellation requires forceful cleanup.
+func (m *Manager) killAndCollectLogs(containerID string, cause error) (string, error) {
+	cleanupCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	_ = m.Stop(cleanupCtx, containerID)
+	logs, _ := m.Logs(cleanupCtx, containerID)
+	return logs, fmt.Errorf("waiting for container: %w", cause)
 }
 
 // Logs retrieves the container's stdout and stderr.
