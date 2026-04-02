@@ -45,6 +45,11 @@ func (a *AiderAgent) Environment() []string {
 	return env
 }
 
+// AllowedEndpoints returns the endpoints Aider needs for API access.
+func (a *AiderAgent) AllowedEndpoints() []string {
+	return []string{"api.openai.com:443", "api.anthropic.com:443"}
+}
+
 // StopSignal returns the signal that indicates Aider has completed its task.
 func (a *AiderAgent) StopSignal() string {
 	return "<promise>COMPLETE</promise>"

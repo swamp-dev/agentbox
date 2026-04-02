@@ -26,21 +26,22 @@ code, retrospective reports, and a dev diary of the agent's experience.`,
 }
 
 var (
-	sprintRepo           string
-	sprintPRD            string
-	sprintAgent          string
-	sprintReviewAgent    string
-	sprintSize           int
-	sprintMaxSprints     int
-	sprintBudgetDuration string
-	sprintNoJournal      bool
-	sprintNoReview       bool
-	sprintDryRun         bool
-	sprintBranch         string
-	sprintDockerImage    string
-	sprintDockerMemory   string
-	sprintDockerCPUs     string
-	sprintDockerNetwork  string
+	sprintRepo                 string
+	sprintPRD                  string
+	sprintAgent                string
+	sprintReviewAgent          string
+	sprintSize                 int
+	sprintMaxSprints           int
+	sprintBudgetDuration       string
+	sprintNoJournal            bool
+	sprintNoReview             bool
+	sprintDryRun               bool
+	sprintBranch               string
+	sprintDockerImage          string
+	sprintDockerMemory         string
+	sprintDockerCPUs           string
+	sprintDockerNetwork        string
+	sprintDockerAllowEndpoints []string
 )
 
 func init() {
@@ -58,7 +59,8 @@ func init() {
 	sprintCmd.Flags().StringVar(&sprintDockerImage, "docker-image", "full", "Docker image (node, python, go, rust, full)")
 	sprintCmd.Flags().StringVar(&sprintDockerMemory, "docker-memory", "4g", "container memory limit")
 	sprintCmd.Flags().StringVar(&sprintDockerCPUs, "docker-cpus", "2", "container CPU limit")
-	sprintCmd.Flags().StringVar(&sprintDockerNetwork, "docker-network", "none", "container network mode (none, bridge, host)")
+	sprintCmd.Flags().StringVar(&sprintDockerNetwork, "docker-network", "none", "container network mode (none, bridge, host, restricted)")
+	sprintCmd.Flags().StringSliceVar(&sprintDockerAllowEndpoints, "allow-endpoint", nil, "additional allowed endpoints for restricted mode (host:port)")
 }
 
 func runSprint(cmd *cobra.Command, args []string) error {
@@ -77,6 +79,7 @@ func runSprint(cmd *cobra.Command, args []string) error {
 	cfg.DockerMemory = sprintDockerMemory
 	cfg.DockerCPUs = sprintDockerCPUs
 	cfg.DockerNetwork = sprintDockerNetwork
+	cfg.DockerAllowedEndpoints = sprintDockerAllowEndpoints
 	cfg.DryRun = sprintDryRun
 
 	if err := cfg.ParseBudgetDuration(); err != nil {

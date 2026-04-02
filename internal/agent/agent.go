@@ -24,6 +24,10 @@ type Agent interface {
 
 	// ParseOutput extracts structured information from agent output.
 	ParseOutput(output string) *AgentOutput
+
+	// AllowedEndpoints returns the host:port pairs this agent needs to reach
+	// over the network. Used for egress-restricted networking.
+	AllowedEndpoints() []string
 }
 
 // AgentOutput contains parsed information from an agent's execution.

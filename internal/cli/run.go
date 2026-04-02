@@ -15,13 +15,14 @@ import (
 )
 
 var (
-	runAgent        string
-	runProject      string
-	runPrompt       string
-	runNetwork      string
-	runImage        string
-	runInteractive  bool
-	runAllowNetwork bool
+	runAgent          string
+	runProject        string
+	runPrompt         string
+	runNetwork        string
+	runImage          string
+	runInteractive    bool
+	runAllowNetwork   bool
+	runAllowEndpoints []string
 )
 
 var runCmd = &cobra.Command{
@@ -41,10 +42,13 @@ func init() {
 	runCmd.Flags().StringVarP(&runAgent, "agent", "a", "claude", "agent to use (claude, claude-cli, amp, aider)")
 	runCmd.Flags().StringVarP(&runProject, "project", "p", ".", "project directory to mount")
 	runCmd.Flags().StringVar(&runPrompt, "prompt", "", "prompt to send to the agent")
-	runCmd.Flags().StringVar(&runNetwork, "network", "none", "network mode (none, bridge, host)")
+	runCmd.Flags().StringVar(&runNetwork, "network", "none", "network mode (none, bridge, host, restricted)")
 	runCmd.Flags().StringVar(&runImage, "image", "full", "Docker image to use")
 	runCmd.Flags().BoolVarP(&runInteractive, "interactive", "i", false, "run in interactive mode")
-	runCmd.Flags().BoolVar(&runAllowNetwork, "allow-network", false, "allow outbound network access")
+	runCmd.Flags().BoolVar(&runAllowNetwork, "allow-network", false, "allow outbound network access (restricted egress)")
+	runCmd.Flags().StringSliceVar(&runAllowEndpoints, "allow-endpoint", nil, "additional allowed endpoints for restricted mode (host:port)")
+
+	runCmd.MarkFlagsMutuallyExclusive("allow-network", "network")
 }
 
 func runRun(cmd *cobra.Command, args []string) error {
@@ -60,15 +64,25 @@ func runRun(cmd *cobra.Command, args []string) error {
 	cfg.Agent.Name = runAgent
 	cfg.Docker.Image = runImage
 	if runAllowNetwork {
-		cfg.Docker.Network = "bridge"
+		cfg.Docker.Network = "restricted"
 	} else {
 		cfg.Docker.Network = runNetwork
 	}
 
 	// claude-cli requires network access for subscription auth
 	if runAgent == "claude-cli" && cfg.Docker.Network == "none" {
-		logger.Info("claude-cli requires network access, overriding network to bridge")
-		cfg.Docker.Network = "bridge"
+		logger.Info("claude-cli requires network access, using restricted egress mode")
+		cfg.Docker.Network = "restricted"
+	}
+
+	// Merge agent-default endpoints with any user-specified endpoints.
+	if cfg.Docker.Network == "restricted" {
+		ag, _ := agent.New(runAgent)
+		if ag != nil {
+			cfg.Docker.AllowedEndpoints = append(ag.AllowedEndpoints(), runAllowEndpoints...)
+		} else if len(runAllowEndpoints) > 0 {
+			cfg.Docker.AllowedEndpoints = runAllowEndpoints
+		}
 	}
 
 	if err := cfg.Validate(); err != nil {

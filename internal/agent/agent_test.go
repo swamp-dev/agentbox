@@ -670,6 +670,40 @@ func TestClaudeCLIAgentParseOutput(t *testing.T) {
 	}
 }
 
+func TestAllowedEndpoints(t *testing.T) {
+	tests := []struct {
+		name     string
+		agent    Agent
+		contains []string
+	}{
+		{"claude", NewClaudeAgent(), []string{"api.anthropic.com:443"}},
+		{"claude-cli", NewClaudeCLIAgent(), []string{"api.anthropic.com:443"}},
+		{"aider", NewAiderAgent(), []string{"api.openai.com:443", "api.anthropic.com:443"}},
+		{"amp", NewAmpAgent(), []string{"api.amp.dev:443"}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			endpoints := tt.agent.AllowedEndpoints()
+			if len(endpoints) == 0 {
+				t.Error("AllowedEndpoints() returned empty slice")
+			}
+			for _, want := range tt.contains {
+				found := false
+				for _, ep := range endpoints {
+					if ep == want {
+						found = true
+						break
+					}
+				}
+				if !found {
+					t.Errorf("AllowedEndpoints() missing %q, got %v", want, endpoints)
+				}
+			}
+		})
+	}
+}
+
 func TestValidateAPIKeyClaudeCLI(t *testing.T) {
 	// Test with a valid ~/.claude/ directory using a temp dir
 	tmpHome := t.TempDir()

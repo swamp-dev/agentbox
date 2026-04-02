@@ -45,6 +45,11 @@ func (a *AmpAgent) Environment() []string {
 	return env
 }
 
+// AllowedEndpoints returns the endpoints Amp needs for API access.
+func (a *AmpAgent) AllowedEndpoints() []string {
+	return []string{"api.amp.dev:443", "api.anthropic.com:443"}
+}
+
 // StopSignal returns the signal that indicates Amp has completed its task.
 func (a *AmpAgent) StopSignal() string {
 	return "<promise>COMPLETE</promise>"

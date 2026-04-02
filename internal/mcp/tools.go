@@ -103,7 +103,15 @@ func (h *ToolHandler) handleRun(argsJSON json.RawMessage) *ToolCallResult {
 		cfg.Docker.Network = args.Network
 	}
 	if args.Agent == "claude-cli" && cfg.Docker.Network == "none" {
-		cfg.Docker.Network = "bridge"
+		cfg.Docker.Network = "restricted"
+	}
+
+	// Set agent-default endpoints for restricted mode.
+	if cfg.Docker.Network == "restricted" && len(cfg.Docker.AllowedEndpoints) == 0 {
+		ag, _ := agent.New(args.Agent)
+		if ag != nil {
+			cfg.Docker.AllowedEndpoints = ag.AllowedEndpoints()
+		}
 	}
 
 	if err := cfg.Validate(); err != nil {
@@ -649,7 +657,7 @@ func AllTools() []ToolDefinition {
 					},
 					"network": map[string]interface{}{
 						"type":        "string",
-						"description": "Network mode (none, bridge, host)",
+						"description": "Network mode (none, bridge, host, restricted)",
 					},
 				},
 				"required": []string{"project_dir", "agent", "prompt"},

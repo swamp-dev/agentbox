@@ -45,6 +45,11 @@ func (a *ClaudeAgent) Environment() []string {
 	return env
 }
 
+// AllowedEndpoints returns the endpoints Claude needs for API access.
+func (a *ClaudeAgent) AllowedEndpoints() []string {
+	return []string{"api.anthropic.com:443"}
+}
+
 // StopSignal returns the signal that indicates Claude has completed its task.
 func (a *ClaudeAgent) StopSignal() string {
 	return "<promise>COMPLETE</promise>"
