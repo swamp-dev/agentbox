@@ -150,6 +150,30 @@ func TestAddDependency_PreventsCycle(t *testing.T) {
 	}
 }
 
+func TestUpdatePriority(t *testing.T) {
+	db := New()
+	if err := db.Add(&Task{ID: "t-1", Title: "Test", Status: StatusPending, Priority: 1}); err != nil {
+		t.Fatalf("setup Add: %v", err)
+	}
+
+	if err := db.UpdatePriority("t-1", 99); err != nil {
+		t.Fatalf("UpdatePriority: %v", err)
+	}
+
+	got, _ := db.Get("t-1")
+	if got.Priority != 99 {
+		t.Errorf("expected priority 99, got %d", got.Priority)
+	}
+}
+
+func TestUpdatePriority_NotFound(t *testing.T) {
+	db := New()
+	err := db.UpdatePriority("nonexistent", 5)
+	if err == nil {
+		t.Error("expected error for nonexistent task")
+	}
+}
+
 func TestSplitTask(t *testing.T) {
 	db := New()
 	if err := db.Add(&Task{ID: "big", Title: "Big task", Status: StatusPending, Priority: 1}); err != nil {

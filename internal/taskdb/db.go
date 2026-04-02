@@ -206,6 +206,19 @@ func (db *DB) NextTask() *Task {
 	return candidates[0]
 }
 
+// UpdatePriority changes the priority of a task.
+func (db *DB) UpdatePriority(taskID string, priority int) error {
+	db.mu.Lock()
+	defer db.mu.Unlock()
+
+	task, ok := db.Tasks[taskID]
+	if !ok {
+		return fmt.Errorf("task %s not found", taskID)
+	}
+	task.Priority = priority
+	return nil
+}
+
 // SplitTask decomposes a task into subtasks, marking the parent as deferred.
 func (db *DB) SplitTask(parentID string, subtasks []*Task) error {
 	db.mu.Lock()
