@@ -75,12 +75,14 @@ func New(cfg *Config, logger *slog.Logger) (*Supervisor, error) {
 	// Create journal.
 	j := journal.New(s, sessionID)
 
+	tdb := taskdb.New()
+
 	return &Supervisor{
 		cfg:       cfg,
 		store:     s,
 		sessionID: sessionID,
 		workflow:  wf,
-		taskDB:    taskdb.New(),
+		taskDB:    tdb,
 		collector: collector,
 		budget:    budget,
 		journal:   j,

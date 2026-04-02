@@ -5,17 +5,20 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/swamp-dev/agentbox/internal/journal"
 	"github.com/swamp-dev/agentbox/internal/retro"
 	"github.com/swamp-dev/agentbox/internal/store"
+	"github.com/swamp-dev/agentbox/internal/taskdb"
 )
 
 // AdaptiveController applies retrospective recommendations.
 type AdaptiveController struct {
 	store     *store.Store
 	sessionID int64
+	taskDB    *taskdb.DB
 	logger    *slog.Logger
 
 	// Fallback agent switching.
@@ -26,8 +29,9 @@ type AdaptiveController struct {
 }
 
 // NewAdaptiveController creates a new adaptive controller.
-func NewAdaptiveController(s *store.Store, sessionID int64, logger *slog.Logger) *AdaptiveController {
-	return &AdaptiveController{store: s, sessionID: sessionID, logger: logger}
+// The taskDB parameter is optional; if nil, task reordering and splitting are no-ops.
+func NewAdaptiveController(s *store.Store, sessionID int64, tdb *taskdb.DB, logger *slog.Logger) *AdaptiveController {
+	return &AdaptiveController{store: s, sessionID: sessionID, taskDB: tdb, logger: logger}
 }
 
 // SetFallbackAgent configures the fallback agent name.
@@ -119,14 +123,76 @@ func (ac *AdaptiveController) Apply(recs []retro.Recommendation) []string {
 			ac.logger.Warn("escalation needed", "reason", rec.Description)
 
 		case retro.RecReorderTasks:
-			actions = append(actions, fmt.Sprintf("Recommendation: reorder tasks — %s", rec.Description))
+			if ac.taskDB != nil && rec.TaskID != "" {
+				// Lower the failing task's priority so other tasks run first.
+				// Higher priority number = lower priority in NextTask() sorting.
+				task, ok := ac.taskDB.Get(rec.TaskID)
+				if ok {
+					newPriority := task.Priority + 10
+					if err := ac.taskDB.UpdatePriority(rec.TaskID, newPriority); err == nil {
+						actions = append(actions, fmt.Sprintf("Deprioritized task %s (priority %d → %d): %s", rec.TaskID, task.Priority, newPriority, rec.Description))
+						ac.logger.Info("deprioritized task", "task_id", rec.TaskID, "old_priority", task.Priority, "new_priority", newPriority)
+					} else {
+						actions = append(actions, fmt.Sprintf("Recommendation: reorder tasks — %s", rec.Description))
+					}
+				} else {
+					actions = append(actions, fmt.Sprintf("Recommendation: reorder tasks — %s", rec.Description))
+				}
+			} else {
+				actions = append(actions, fmt.Sprintf("Recommendation: reorder tasks — %s", rec.Description))
+			}
 
 		case retro.RecSplitTask:
-			actions = append(actions, fmt.Sprintf("Recommendation: split task — %s", rec.Description))
+			if ac.taskDB != nil && rec.TaskID != "" {
+				task, ok := ac.taskDB.Get(rec.TaskID)
+				if ok {
+					subtasks := ac.generateSubtasks(task, rec.Description)
+					if err := ac.taskDB.SplitTask(rec.TaskID, subtasks); err == nil {
+						subtaskIDs := make([]string, len(subtasks))
+						for i, st := range subtasks {
+							subtaskIDs[i] = st.ID
+						}
+						actions = append(actions, fmt.Sprintf("Split task %s into %d subtasks (%s): %s",
+							rec.TaskID, len(subtasks), strings.Join(subtaskIDs, ", "), rec.Description))
+						ac.logger.Info("split task", "task_id", rec.TaskID, "subtasks", len(subtasks))
+					} else {
+						actions = append(actions, fmt.Sprintf("Recommendation: split task — %s (error: %v)", rec.Description, err))
+						ac.logger.Warn("failed to split task", "task_id", rec.TaskID, "error", err)
+					}
+				} else {
+					actions = append(actions, fmt.Sprintf("Recommendation: split task — %s", rec.Description))
+				}
+			} else {
+				actions = append(actions, fmt.Sprintf("Recommendation: split task — %s", rec.Description))
+			}
 		}
 	}
 
 	return actions
+}
+
+// generateSubtasks creates subtasks from a parent task for splitting.
+// It divides the work into smaller pieces based on the task's description.
+func (ac *AdaptiveController) generateSubtasks(parent *taskdb.Task, description string) []*taskdb.Task {
+	// Generate 2 subtasks from the parent task.
+	return []*taskdb.Task{
+		{
+			ID:          parent.ID + "-part1",
+			Title:       parent.Title + " (part 1)",
+			Description: fmt.Sprintf("First part of: %s. Context: %s", parent.Description, description),
+			Status:      taskdb.StatusPending,
+			Priority:    parent.Priority,
+			MaxAttempts: parent.MaxAttempts,
+		},
+		{
+			ID:          parent.ID + "-part2",
+			Title:       parent.Title + " (part 2)",
+			Description: fmt.Sprintf("Second part of: %s. Context: %s", parent.Description, description),
+			Status:      taskdb.StatusPending,
+			Priority:    parent.Priority,
+			MaxAttempts: parent.MaxAttempts,
+		},
+	}
 }
 
 // WriteEscalation appends an escalation message to the escalation log.

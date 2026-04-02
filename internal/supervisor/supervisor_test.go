@@ -314,7 +314,7 @@ func TestAdaptiveController_Apply(t *testing.T) {
 	}
 
 	logger := testLogger()
-	ac := NewAdaptiveController(s, sessionID, logger)
+	ac := NewAdaptiveController(s, sessionID, nil, logger)
 
 	recs := []retro.Recommendation{
 		{Action: retro.RecDeferTask, TaskID: "t-1", Description: "Too many failures"},
@@ -336,7 +336,7 @@ func TestAdaptiveController_Apply_SwitchAgent_WithFallback(t *testing.T) {
 	sessionID, _ := s.CreateSession("", "main", "")
 	logger := testLogger()
 
-	ac := NewAdaptiveController(s, sessionID, logger)
+	ac := NewAdaptiveController(s, sessionID, nil, logger)
 	ac.SetFallbackAgent("aider")
 
 	recs := []retro.Recommendation{
@@ -377,7 +377,7 @@ func TestAdaptiveController_Apply_SwitchAgent_Idempotent(t *testing.T) {
 	sessionID, _ := s.CreateSession("", "main", "")
 	logger := testLogger()
 
-	ac := NewAdaptiveController(s, sessionID, logger)
+	ac := NewAdaptiveController(s, sessionID, nil, logger)
 	ac.SetFallbackAgent("aider")
 
 	recs := []retro.Recommendation{
@@ -412,7 +412,7 @@ func TestAdaptiveController_Apply_SwitchAgent_NoFallback(t *testing.T) {
 	sessionID, _ := s.CreateSession("", "main", "")
 	logger := testLogger()
 
-	ac := NewAdaptiveController(s, sessionID, logger)
+	ac := NewAdaptiveController(s, sessionID, nil, logger)
 	// No fallback configured — default behavior.
 
 	recs := []retro.Recommendation{
@@ -436,7 +436,7 @@ func TestAdaptiveController_Apply_SwitchAgent_JournalEntry(t *testing.T) {
 	logger := testLogger()
 	j := journal.New(s, sessionID)
 
-	ac := NewAdaptiveController(s, sessionID, logger)
+	ac := NewAdaptiveController(s, sessionID, nil, logger)
 	ac.SetJournal(j)
 	ac.SetFallbackAgent("amp")
 
@@ -1358,7 +1358,7 @@ func TestApply_SplitTask(t *testing.T) {
 	s := openTestStore(t)
 	sessionID, _ := s.CreateSession("", "main", "")
 	logger := testLogger()
-	ac := NewAdaptiveController(s, sessionID, logger)
+	ac := NewAdaptiveController(s, sessionID, nil, logger)
 
 	recs := []retro.Recommendation{
 		{Action: retro.RecSplitTask, TaskID: "t-1", Description: "split into subtasks"},
@@ -1622,7 +1622,7 @@ func TestAdaptiveController_WriteEscalation(t *testing.T) {
 
 	sessionID, _ := s.CreateSession("", "main", "")
 	logger := testLogger()
-	ac := NewAdaptiveController(s, sessionID, logger)
+	ac := NewAdaptiveController(s, sessionID, nil, logger)
 
 	dir := t.TempDir()
 	err = ac.WriteEscalation(dir, "System is stuck on auth module")
