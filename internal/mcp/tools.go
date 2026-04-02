@@ -145,6 +145,9 @@ func (h *ToolHandler) handleRun(argsJSON json.RawMessage) *ToolCallResult {
 	if args.Timeout > 0 {
 		timeout = time.Duration(args.Timeout) * time.Minute
 	}
+	if timeout > defaultAsyncTimeout {
+		return textError(fmt.Sprintf("timeout %d minutes exceeds maximum of %d minutes", args.Timeout, int(defaultAsyncTimeout.Minutes())))
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
