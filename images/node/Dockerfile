@@ -29,6 +29,9 @@ RUN npm install -g @anthropic-ai/claude-code
 WORKDIR /workspace
 RUN chown agent:agent /workspace
 
+# Ensure .claude dir exists and is writable for claude-cli runtime state
+RUN mkdir -p /home/agent/.claude && chown agent:agent /home/agent/.claude
+
 # Switch to agent user
 USER agent
 

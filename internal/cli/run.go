@@ -52,21 +52,29 @@ func init() {
 }
 
 func runRun(cmd *cobra.Command, args []string) error {
-	if err := agent.ValidateAPIKey(runAgent); err != nil {
-		return err
-	}
-
 	cfg, err := config.Load(cfgFile)
 	if err != nil {
 		return fmt.Errorf("loading config: %w", err)
 	}
 
-	cfg.Agent.Name = runAgent
-	cfg.Docker.Image = runImage
+	// CLI flags override config only when explicitly set.
+	if cmd.Flags().Changed("agent") {
+		cfg.Agent.Name = runAgent
+	}
+	if cmd.Flags().Changed("image") {
+		cfg.Docker.Image = runImage
+	}
 	if runAllowNetwork {
 		cfg.Docker.Network = "restricted"
-	} else {
+	} else if cmd.Flags().Changed("network") {
 		cfg.Docker.Network = runNetwork
+	}
+
+	// Resolve the effective agent name for use below.
+	runAgent = cfg.Agent.Name
+
+	if err := agent.ValidateAPIKey(runAgent); err != nil {
+		return err
 	}
 
 	// claude-cli requires network access for subscription auth
@@ -107,6 +115,7 @@ func runRun(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("building container config: %w", err)
 	}
+	containerCfg.Interactive = runInteractive
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

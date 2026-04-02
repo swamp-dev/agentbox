@@ -53,7 +53,7 @@ WORKDIR /workspace
 RUN chown agent:agent /workspace
 
 # Copy Rust and Go binaries for agent user
-RUN mkdir -p /home/agent/.cargo/bin /home/agent/go/bin && \
+RUN mkdir -p /home/agent/.cargo/bin /home/agent/go/bin /home/agent/.claude && \
     cp /root/.cargo/bin/* /home/agent/.cargo/bin/ 2>/dev/null || true && \
     cp /root/go/bin/* /home/agent/go/bin/ 2>/dev/null || true && \
     chown -R agent:agent /home/agent

@@ -65,22 +65,56 @@ func init() {
 
 func runSprint(cmd *cobra.Command, args []string) error {
 	cfg := supervisor.DefaultConfig()
-	cfg.RepoURL = sprintRepo
-	cfg.PRDFile = sprintPRD
-	cfg.Agent = sprintAgent
-	cfg.ReviewAgent = sprintReviewAgent
-	cfg.SprintSize = sprintSize
-	cfg.MaxSprints = sprintMaxSprints
-	cfg.BudgetDuration = sprintBudgetDuration
-	cfg.JournalEnabled = !sprintNoJournal
-	cfg.ReviewEnabled = !sprintNoReview
-	cfg.BranchName = sprintBranch
-	cfg.DockerImage = sprintDockerImage
-	cfg.DockerMemory = sprintDockerMemory
-	cfg.DockerCPUs = sprintDockerCPUs
-	cfg.DockerNetwork = sprintDockerNetwork
-	cfg.DockerAllowedEndpoints = sprintDockerAllowEndpoints
-	cfg.DryRun = sprintDryRun
+
+	// Only override defaults when CLI flags are explicitly set.
+	if cmd.Flags().Changed("repo") {
+		cfg.RepoURL = sprintRepo
+	}
+	if cmd.Flags().Changed("prd") {
+		cfg.PRDFile = sprintPRD
+	}
+	if cmd.Flags().Changed("agent") {
+		cfg.Agent = sprintAgent
+	}
+	if cmd.Flags().Changed("review-agent") {
+		cfg.ReviewAgent = sprintReviewAgent
+	}
+	if cmd.Flags().Changed("sprint-size") {
+		cfg.SprintSize = sprintSize
+	}
+	if cmd.Flags().Changed("max-sprints") {
+		cfg.MaxSprints = sprintMaxSprints
+	}
+	if cmd.Flags().Changed("budget-duration") {
+		cfg.BudgetDuration = sprintBudgetDuration
+	}
+	if cmd.Flags().Changed("no-journal") {
+		cfg.JournalEnabled = !sprintNoJournal
+	}
+	if cmd.Flags().Changed("no-review") {
+		cfg.ReviewEnabled = !sprintNoReview
+	}
+	if cmd.Flags().Changed("branch") {
+		cfg.BranchName = sprintBranch
+	}
+	if cmd.Flags().Changed("docker-image") {
+		cfg.DockerImage = sprintDockerImage
+	}
+	if cmd.Flags().Changed("docker-memory") {
+		cfg.DockerMemory = sprintDockerMemory
+	}
+	if cmd.Flags().Changed("docker-cpus") {
+		cfg.DockerCPUs = sprintDockerCPUs
+	}
+	if cmd.Flags().Changed("docker-network") {
+		cfg.DockerNetwork = sprintDockerNetwork
+	}
+	if len(sprintDockerAllowEndpoints) > 0 {
+		cfg.DockerAllowedEndpoints = sprintDockerAllowEndpoints
+	}
+	if cmd.Flags().Changed("dry-run") {
+		cfg.DryRun = sprintDryRun
+	}
 
 	if err := cfg.ParseBudgetDuration(); err != nil {
 		return fmt.Errorf("invalid budget duration: %w", err)

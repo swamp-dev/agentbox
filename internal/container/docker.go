@@ -2,6 +2,8 @@
 package container
 
 import (
+	"archive/tar"
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -58,6 +60,7 @@ type ContainerConfig struct {
 	MountSSH          bool
 	MountGit          bool
 	MountClaudeConfig bool
+	Interactive       bool // allocate TTY and keep stdin open
 }
 
 // ImageName returns the full Docker image name for a given image type.
@@ -117,35 +120,19 @@ func (m *Manager) Create(ctx context.Context, cfg *ContainerConfig) (string, err
 		}
 	}
 
-	if cfg.MountClaudeConfig {
-		claudeDir := filepath.Join(home, ".claude")
-		if _, err := os.Stat(claudeDir); err == nil {
-			mounts = append(mounts, mount.Mount{
-				Type:     mount.TypeBind,
-				Source:   claudeDir,
-				Target:   "/home/agent/.claude",
-				ReadOnly: true,
-			})
-		}
-		// Claude Code stores auth/config in ~/.claude.json (separate from ~/.claude/)
-		claudeJSON := filepath.Join(home, ".claude.json")
-		if _, err := os.Stat(claudeJSON); err == nil {
-			mounts = append(mounts, mount.Mount{
-				Type:     mount.TypeBind,
-				Source:   claudeJSON,
-				Target:   "/home/agent/.claude.json",
-				ReadOnly: true,
-			})
-		}
-	}
+	// NOTE: claude-cli credentials (~/.claude/.credentials.json) are injected
+	// via CopyToContainer after ContainerCreate — not as a bind mount — so the
+	// file is readable by the container's agent user regardless of host
+	// permissions. We do NOT mount ~/.claude.json because Claude Code tries to
+	// write to it during execution and a read-only mount causes it to hang.
 
 	containerCfg := &container.Config{
 		Image:      cfg.Image,
 		Cmd:        cfg.Cmd,
 		Env:        cfg.Env,
 		WorkingDir: "/workspace",
-		Tty:        true,
-		OpenStdin:  true,
+		Tty:        cfg.Interactive,
+		OpenStdin:  cfg.Interactive,
 	}
 
 	hostCfg := &container.HostConfig{
@@ -190,7 +177,25 @@ func (m *Manager) Create(ctx context.Context, cfg *ContainerConfig) (string, err
 		return "", fmt.Errorf("creating container: %w", err)
 	}
 
+	// Inject claude-cli credentials into the container before starting.
+	// We copy instead of bind-mounting because the host file may be owned
+	// by root with 0600 permissions, making it unreadable by the container's
+	// agent user (UID 1000).
+	if cfg.MountClaudeConfig {
+		credFile := filepath.Join(home, ".claude", ".credentials.json")
+		if data, err := os.ReadFile(credFile); err == nil {
+			if copyErr := m.copyFileToContainer(ctx, resp.ID, "/home/agent/.claude/.credentials.json", data, 1000, 1000); copyErr != nil {
+				_ = m.client.ContainerRemove(ctx, resp.ID, container.RemoveOptions{Force: true})
+				if rn != nil {
+					_ = m.RemoveRestrictedNetwork(ctx, rn)
+				}
+				return "", fmt.Errorf("injecting credentials: %w", copyErr)
+			}
+		}
+	}
+
 	if err := m.client.ContainerStart(ctx, resp.ID, container.StartOptions{}); err != nil {
+		_ = m.client.ContainerRemove(ctx, resp.ID, container.RemoveOptions{Force: true})
 		if rn != nil {
 			_ = m.RemoveRestrictedNetwork(ctx, rn)
 		}
@@ -335,6 +340,33 @@ func (m *Manager) Attach(ctx context.Context, containerID string) error {
 
 	_, err = io.Copy(resp.Conn, os.Stdin)
 	return err
+}
+
+// copyFileToContainer writes a single file into a container using a tar archive.
+// The file is created with the specified UID/GID ownership and 0600 permissions.
+func (m *Manager) copyFileToContainer(ctx context.Context, containerID, destPath string, content []byte, uid, gid int) error {
+	dir := filepath.Dir(destPath)
+	name := filepath.Base(destPath)
+
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+	if err := tw.WriteHeader(&tar.Header{
+		Name: name,
+		Size: int64(len(content)),
+		Mode: 0o600,
+		Uid:  uid,
+		Gid:  gid,
+	}); err != nil {
+		return err
+	}
+	if _, err := tw.Write(content); err != nil {
+		return err
+	}
+	if err := tw.Close(); err != nil {
+		return err
+	}
+
+	return m.client.CopyToContainer(ctx, containerID, dir, &buf, container.CopyToContainerOptions{})
 }
 
 // Stop gracefully stops a running container.

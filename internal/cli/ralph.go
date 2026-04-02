@@ -53,19 +53,31 @@ func init() {
 }
 
 func runRalph(cmd *cobra.Command, args []string) error {
-	if err := agent.ValidateAPIKey(ralphAgent); err != nil {
-		return err
-	}
-
 	cfg, err := config.Load(cfgFile)
 	if err != nil {
 		return fmt.Errorf("loading config: %w", err)
 	}
 
-	cfg.Agent.Name = ralphAgent
-	cfg.Ralph.MaxIterations = ralphMaxIterations
-	cfg.Ralph.PRDFile = ralphPRDFile
-	cfg.Ralph.AutoCommit = ralphAutoCommit
+	// CLI flags override config only when explicitly set.
+	if cmd.Flags().Changed("agent") {
+		cfg.Agent.Name = ralphAgent
+	}
+	if cmd.Flags().Changed("max-iterations") {
+		cfg.Ralph.MaxIterations = ralphMaxIterations
+	}
+	if cmd.Flags().Changed("prd") {
+		cfg.Ralph.PRDFile = ralphPRDFile
+	}
+	if cmd.Flags().Changed("auto-commit") {
+		cfg.Ralph.AutoCommit = ralphAutoCommit
+	}
+
+	// Resolve the effective agent name for validation below.
+	ralphAgent = cfg.Agent.Name
+
+	if err := agent.ValidateAPIKey(ralphAgent); err != nil {
+		return err
+	}
 
 	// claude-cli requires network access for subscription auth
 	if ralphAgent == "claude-cli" && cfg.Docker.Network == "none" {
