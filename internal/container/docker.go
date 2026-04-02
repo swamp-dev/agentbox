@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/mount"
@@ -181,10 +182,19 @@ func (m *Manager) Run(ctx context.Context, cfg *ContainerConfig) (string, error)
 }
 
 // Wait blocks until the container exits and returns its output.
+// It respects context cancellation — if the context is cancelled or times out,
+// the container is killed and partial logs are returned.
 func (m *Manager) Wait(ctx context.Context, containerID string) (string, error) {
 	statusCh, errCh := m.client.ContainerWait(ctx, containerID, container.WaitConditionNotRunning)
 
 	select {
+	case <-ctx.Done():
+		// Context cancelled or timed out — kill the container and return partial logs.
+		killCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		_ = m.Stop(killCtx, containerID)
+		logs, _ := m.Logs(killCtx, containerID)
+		return logs, fmt.Errorf("waiting for container: %w", ctx.Err())
 	case err := <-errCh:
 		if err != nil {
 			return "", fmt.Errorf("waiting for container: %w", err)

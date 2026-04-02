@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -18,6 +19,16 @@ import (
 	"github.com/swamp-dev/agentbox/internal/ralph"
 	"github.com/swamp-dev/agentbox/internal/store"
 	"github.com/swamp-dev/agentbox/internal/supervisor"
+)
+
+const (
+	// defaultRunTimeout is the maximum time an agentbox_run call can take before
+	// the container is killed. Prevents the MCP server from hanging indefinitely.
+	defaultRunTimeout = 30 * time.Minute
+
+	// defaultAsyncTimeout is the maximum time async operations (ralph, sprint)
+	// can run before being cancelled.
+	defaultAsyncTimeout = 4 * time.Hour
 )
 
 // ToolHandler dispatches MCP tool calls to implementations.
@@ -74,6 +85,7 @@ type runArgs struct {
 	Prompt     string `json:"prompt"`
 	Image      string `json:"image,omitempty"`
 	Network    string `json:"network,omitempty"`
+	Timeout    int    `json:"timeout,omitempty"` // timeout in minutes (default: 30)
 }
 
 func (h *ToolHandler) handleRun(argsJSON json.RawMessage) *ToolCallResult {
@@ -129,16 +141,23 @@ func (h *ToolHandler) handleRun(argsJSON json.RawMessage) *ToolCallResult {
 		return textError(fmt.Sprintf("building container config: %v", err))
 	}
 
-	ctx := context.Background()
+	timeout := defaultRunTimeout
+	if args.Timeout > 0 {
+		timeout = time.Duration(args.Timeout) * time.Minute
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
 	output, err := cm.Run(ctx, containerCfg)
 	if err != nil {
+		if ctx.Err() == context.DeadlineExceeded {
+			return textError(fmt.Sprintf("agent execution timed out after %s\n\nPartial output:\n%s", timeout, output))
+		}
 		return textError(fmt.Sprintf("agent execution failed: %v\n\nOutput:\n%s", err, output))
 	}
 
 	result := ag.ParseOutput(output)
 
-	// TODO: agentbox_run blocks the MCP message loop. Consider making it async
-	// like ralph_start and sprint_start — return a session ID and let status poll it.
 	data, err := json.Marshal(map[string]interface{}{
 		"success":   result.Success,
 		"completed": result.Completed,
@@ -202,7 +221,8 @@ func (h *ToolHandler) handleRalphStart(argsJSON json.RawMessage) *ToolCallResult
 		}
 		defer loop.Close()
 
-		ctx := context.Background()
+		ctx, cancel := context.WithTimeout(context.Background(), defaultAsyncTimeout)
+		defer cancel()
 		if err := loop.Run(ctx); err != nil {
 			h.mu.Lock()
 			h.sessions[sessionID].Status = "failed"
@@ -280,7 +300,8 @@ func (h *ToolHandler) handleSprintStart(argsJSON json.RawMessage) *ToolCallResul
 			return
 		}
 
-		ctx := context.Background()
+		ctx, cancel := context.WithTimeout(context.Background(), defaultAsyncTimeout)
+		defer cancel()
 		if err := sup.Run(ctx); err != nil {
 			h.mu.Lock()
 			h.sessions[sessionID].Status = "failed"
@@ -650,6 +671,10 @@ func AllTools() []ToolDefinition {
 					"network": map[string]interface{}{
 						"type":        "string",
 						"description": "Network mode (none, bridge, host)",
+					},
+					"timeout": map[string]interface{}{
+						"type":        "integer",
+						"description": "Timeout in minutes (default: 30). Container is killed if exceeded.",
 					},
 				},
 				"required": []string{"project_dir", "agent", "prompt"},
