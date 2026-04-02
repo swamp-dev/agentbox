@@ -269,8 +269,11 @@ func dockerAvailable() bool {
 	if err != nil {
 		return false
 	}
-	cm.Close()
-	return true
+	defer cm.Close()
+
+	// Also check that the test image exists — CI has Docker but no agentbox images.
+	_, _, err = cm.client.ImageInspectWithRaw(context.Background(), "agentbox/full:latest")
+	return err == nil
 }
 
 func TestRunNonInteractiveOutput(t *testing.T) {
