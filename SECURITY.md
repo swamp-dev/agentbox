@@ -18,7 +18,7 @@ Agentbox provides defense-in-depth isolation for running AI coding agents:
 | Resource | Protection |
 |----------|------------|
 | Filesystem | Only `/workspace` (your project) accessible |
-| Network | Disabled by default (`--allow-network` to enable) |
+| Network | Disabled by default; `--allow-network` uses egress-restricted mode |
 | Processes | Separate PID namespace |
 | User | Runs as non-root `agent` user (UID 1000) |
 | Docker | No access to host docker.sock |
@@ -69,11 +69,22 @@ See [docs/troubleshooting.md](docs/troubleshooting.md#quality-check-allowlist) f
 - **PRD files**: Task definitions are used to prompt agents
 - **Docker images**: Use official agentbox images or build your own from provided Dockerfiles
 
+### Egress-Restricted Networking
+
+When network access is required (e.g., `claude-cli` for subscription auth), agentbox uses a **restricted egress** mode instead of unrestricted bridge networking:
+
+1. A Docker network with `Internal: true` is created — containers on it have no default route to the internet
+2. A proxy sidecar container runs on both the internal network and the default bridge
+3. The proxy enforces a domain allowlist — only approved endpoints (e.g., `api.anthropic.com:443`) are reachable
+4. The agent container is placed on the internal network only — even tools that ignore `HTTP_PROXY` cannot reach external hosts
+
+Each agent has sensible default endpoints. Users can add custom endpoints with `--allow-endpoint host:port`. For unrestricted access, use `--network bridge` (explicit opt-in).
+
 ## Best Practices
 
 1. **Review changes**: Always review agent-generated code before committing to production
 2. **Use git branches**: Run agents on feature branches, not main
-3. **Limit network access**: Keep default `network: none` unless API access required
+3. **Limit network access**: Keep default `network: none` unless API access required; when network is needed, prefer `restricted` over `bridge`
 4. **Set resource limits**: Configure memory and CPU limits
 5. **Monitor API usage**: Watch for unexpected API consumption
 6. **Audit quality checks**: Only add commands you trust to quality_checks

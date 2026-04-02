@@ -20,7 +20,8 @@ import (
 
 // Manager handles Docker container lifecycle.
 type Manager struct {
-	client *client.Client
+	client         *client.Client
+	restrictedNets map[string]*RestrictedNetwork // containerID -> restricted network
 }
 
 // NewManager creates a new Docker container manager.
@@ -30,7 +31,10 @@ func NewManager() (*Manager, error) {
 		return nil, fmt.Errorf("creating docker client: %w", err)
 	}
 
-	return &Manager{client: cli}, nil
+	return &Manager{
+		client:         cli,
+		restrictedNets: make(map[string]*RestrictedNetwork),
+	}, nil
 }
 
 // Close releases the Docker client resources.
@@ -47,6 +51,7 @@ type ContainerConfig struct {
 	Env               []string
 	Cmd               []string
 	Network           string
+	AllowedEndpoints  []string // host:port pairs for restricted network mode
 	Memory            int64
 	CPUs              float64
 	MountSSH          bool
@@ -151,19 +156,48 @@ func (m *Manager) Create(ctx context.Context, cfg *ContainerConfig) (string, err
 	}
 
 	networkCfg := &network.NetworkingConfig{}
-	if cfg.Network == "none" {
+
+	var rn *RestrictedNetwork
+	switch cfg.Network {
+	case "none":
 		hostCfg.NetworkMode = "none"
-	} else if cfg.Network == "host" {
+	case "host":
 		hostCfg.NetworkMode = "host"
+	case "restricted":
+		var err error
+		rn, err = m.CreateRestrictedNetwork(ctx, cfg.Name, cfg.Image, cfg.AllowedEndpoints)
+		if err != nil {
+			return "", fmt.Errorf("setting up restricted network: %w", err)
+		}
+		// Place agent container on the internal network only.
+		hostCfg.NetworkMode = container.NetworkMode(rn.NetworkName)
+		// Inject proxy env vars so tools use the proxy.
+		proxyURL := fmt.Sprintf("http://%s:3128", rn.ProxyName)
+		containerCfg.Env = append(containerCfg.Env,
+			"HTTP_PROXY="+proxyURL,
+			"HTTPS_PROXY="+proxyURL,
+			"http_proxy="+proxyURL,
+			"https_proxy="+proxyURL,
+		)
 	}
 
 	resp, err := m.client.ContainerCreate(ctx, containerCfg, hostCfg, networkCfg, nil, cfg.Name)
 	if err != nil {
+		if rn != nil {
+			_ = m.RemoveRestrictedNetwork(ctx, rn)
+		}
 		return "", fmt.Errorf("creating container: %w", err)
 	}
 
 	if err := m.client.ContainerStart(ctx, resp.ID, container.StartOptions{}); err != nil {
+		if rn != nil {
+			_ = m.RemoveRestrictedNetwork(ctx, rn)
+		}
 		return "", fmt.Errorf("starting container: %w", err)
+	}
+
+	if rn != nil {
+		m.restrictedNets[resp.ID] = rn
 	}
 
 	return resp.ID, nil
@@ -284,9 +318,18 @@ func (m *Manager) Stop(ctx context.Context, containerID string) error {
 	return m.client.ContainerStop(ctx, containerID, container.StopOptions{Timeout: &timeout})
 }
 
-// Remove deletes a container.
+// Remove deletes a container and its associated restricted network, if any.
 func (m *Manager) Remove(ctx context.Context, containerID string) error {
-	return m.client.ContainerRemove(ctx, containerID, container.RemoveOptions{Force: true})
+	err := m.client.ContainerRemove(ctx, containerID, container.RemoveOptions{Force: true})
+
+	if rn, ok := m.restrictedNets[containerID]; ok {
+		delete(m.restrictedNets, containerID)
+		if rnErr := m.RemoveRestrictedNetwork(ctx, rn); rnErr != nil && err == nil {
+			err = rnErr
+		}
+	}
+
+	return err
 }
 
 // ParseMemory converts a memory string (e.g., "4g") to bytes.
@@ -400,6 +443,7 @@ func ConfigToContainerConfig(cfg *config.Config, projectPath string, cmd []strin
 		Env:               env,
 		Cmd:               cmd,
 		Network:           cfg.Docker.Network,
+		AllowedEndpoints:  cfg.Docker.AllowedEndpoints,
 		Memory:            memory,
 		CPUs:              cpus,
 		MountSSH:          true,

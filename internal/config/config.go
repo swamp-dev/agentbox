@@ -46,9 +46,10 @@ type AgentConfig struct {
 
 // DockerConfig controls container resources and networking.
 type DockerConfig struct {
-	Image     string          `yaml:"image"` // node, python, go, rust, full
-	Resources ResourcesConfig `yaml:"resources"`
-	Network   string          `yaml:"network"` // none, bridge, host
+	Image            string          `yaml:"image"` // node, python, go, rust, full
+	Resources        ResourcesConfig `yaml:"resources"`
+	Network          string          `yaml:"network"`                     // none, bridge, host, restricted
+	AllowedEndpoints []string        `yaml:"allowed_endpoints,omitempty"` // host:port pairs for restricted mode
 }
 
 // ResourcesConfig sets container resource limits.
@@ -150,9 +151,9 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("invalid image: %s", c.Docker.Image)
 	}
 
-	validNetworks := map[string]bool{"none": true, "bridge": true, "host": true}
+	validNetworks := map[string]bool{"none": true, "bridge": true, "host": true, "restricted": true}
 	if !validNetworks[c.Docker.Network] {
-		return fmt.Errorf("invalid network: %s (must be none, bridge, or host)", c.Docker.Network)
+		return fmt.Errorf("invalid network: %s (must be none, bridge, host, or restricted)", c.Docker.Network)
 	}
 
 	if c.Ralph.MaxIterations < 1 {

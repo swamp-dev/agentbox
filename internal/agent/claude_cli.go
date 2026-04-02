@@ -39,6 +39,11 @@ func (a *ClaudeCLIAgent) Environment() []string {
 	}
 }
 
+// AllowedEndpoints returns the endpoints Claude CLI needs for subscription auth and API access.
+func (a *ClaudeCLIAgent) AllowedEndpoints() []string {
+	return []string{"api.anthropic.com:443"}
+}
+
 // StopSignal returns the signal that indicates Claude has completed its task.
 func (a *ClaudeCLIAgent) StopSignal() string {
 	return "<promise>COMPLETE</promise>"

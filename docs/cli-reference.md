@@ -17,10 +17,11 @@ agentbox run [flags]
 | `--agent` | `-a` | `string` | `claude` | Agent to use (`claude`, `claude-cli`, `amp`, `aider`) |
 | `--project` | `-p` | `string` | `.` | Project directory to mount into the container |
 | `--prompt` | | `string` | | Prompt to send to the agent |
-| `--network` | | `string` | `none` | Network mode (`none`, `bridge`, `host`) |
+| `--network` | | `string` | `none` | Network mode (`none`, `bridge`, `host`, `restricted`) |
 | `--image` | | `string` | `full` | Docker image to use (`node`, `python`, `go`, `rust`, `full`) |
 | `--interactive` | `-i` | `bool` | `false` | Run in interactive mode |
-| `--allow-network` | | `bool` | `false` | Allow outbound network access (overrides `--network` to `bridge`) |
+| `--allow-network` | | `bool` | `false` | Allow outbound network access (uses `restricted` egress mode) |
+| `--allow-endpoint` | | `[]string` | | Additional allowed endpoints for restricted mode (`host:port`) |
 
 ### Examples
 

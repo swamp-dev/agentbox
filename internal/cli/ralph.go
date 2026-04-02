@@ -69,8 +69,16 @@ func runRalph(cmd *cobra.Command, args []string) error {
 
 	// claude-cli requires network access for subscription auth
 	if ralphAgent == "claude-cli" && cfg.Docker.Network == "none" {
-		logger.Info("claude-cli requires network access, overriding network to bridge")
-		cfg.Docker.Network = "bridge"
+		logger.Info("claude-cli requires network access, using restricted egress mode")
+		cfg.Docker.Network = "restricted"
+	}
+
+	// Set agent-default endpoints for restricted mode.
+	if cfg.Docker.Network == "restricted" && len(cfg.Docker.AllowedEndpoints) == 0 {
+		ag, _ := agent.New(ralphAgent)
+		if ag != nil {
+			cfg.Docker.AllowedEndpoints = ag.AllowedEndpoints()
+		}
 	}
 
 	if err := cfg.Validate(); err != nil {

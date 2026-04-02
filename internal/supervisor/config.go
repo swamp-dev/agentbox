@@ -46,10 +46,11 @@ type Config struct {
 	BudgetDuration string `yaml:"budget_duration" json:"budget_duration"`
 
 	// Docker settings (used to build config.Config for ralph.Loop).
-	DockerImage   string `yaml:"docker_image" json:"docker_image"`
-	DockerMemory  string `yaml:"docker_memory" json:"docker_memory"`
-	DockerCPUs    string `yaml:"docker_cpus" json:"docker_cpus"`
-	DockerNetwork string `yaml:"docker_network" json:"docker_network"`
+	DockerImage            string   `yaml:"docker_image" json:"docker_image"`
+	DockerMemory           string   `yaml:"docker_memory" json:"docker_memory"`
+	DockerCPUs             string   `yaml:"docker_cpus" json:"docker_cpus"`
+	DockerNetwork          string   `yaml:"docker_network" json:"docker_network"`
+	DockerAllowedEndpoints []string `yaml:"docker_allowed_endpoints,omitempty" json:"docker_allowed_endpoints,omitempty"`
 
 	// Quality checks run after each iteration.
 	QualityChecks []QualityCheck `yaml:"quality_checks" json:"quality_checks"`
@@ -98,9 +99,10 @@ func (c *Config) ToRalphConfig() *config.Config {
 		Project: config.ProjectConfig{Name: filepath.Base(workDir)},
 		Agent:   config.AgentConfig{Name: c.Agent},
 		Docker: config.DockerConfig{
-			Image:     c.DockerImage,
-			Resources: config.ResourcesConfig{Memory: c.DockerMemory, CPUs: c.DockerCPUs},
-			Network:   c.DockerNetwork,
+			Image:            c.DockerImage,
+			Resources:        config.ResourcesConfig{Memory: c.DockerMemory, CPUs: c.DockerCPUs},
+			Network:          c.DockerNetwork,
+			AllowedEndpoints: c.DockerAllowedEndpoints,
 		},
 		Ralph: config.RalphConfig{
 			MaxIterations: c.MaxSprints * c.SprintSize,
