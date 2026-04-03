@@ -3,7 +3,6 @@ package cli
 import (
 	"context"
 	"fmt"
-	"net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -232,14 +231,14 @@ func validatePRD(cfg *supervisor.Config) (*ralph.PRD, error) {
 	return prd, nil
 }
 
-// validateRepo checks that the repo path exists (if local) or is a valid URL.
+// validateRepo checks that the repo path exists (if local) or that a remote
+// URL is non-empty. Full URL validation is deferred to workflow.CloneOrOpen
+// which handles all git-supported schemes including SCP-style SSH URLs
+// (e.g. git@github.com:user/repo.git).
 func validateRepo(cfg *supervisor.Config) error {
 	if cfg.RepoURL != "" {
-		// Check if it's a valid URL.
-		u, err := url.Parse(cfg.RepoURL)
-		if err != nil || (u.Scheme != "http" && u.Scheme != "https" && u.Scheme != "ssh" && u.Scheme != "git") {
-			return fmt.Errorf("invalid repository URL: %s", cfg.RepoURL)
-		}
+		// Remote repo: just verify non-empty. The workflow layer validates
+		// the URL at clone time, supporting http(s), ssh, git, and SCP formats.
 		return nil
 	}
 
@@ -251,10 +250,10 @@ func validateRepo(cfg *supervisor.Config) error {
 
 	info, err := os.Stat(workDir)
 	if err != nil {
-		return fmt.Errorf("work directory does not exist: %s", workDir)
+		return fmt.Errorf("work directory %q does not exist", workDir)
 	}
 	if !info.IsDir() {
-		return fmt.Errorf("work directory is not a directory: %s", workDir)
+		return fmt.Errorf("work directory %q is not a directory", workDir)
 	}
 	return nil
 }
