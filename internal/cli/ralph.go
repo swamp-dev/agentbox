@@ -40,6 +40,7 @@ Each iteration:
 
 Examples:
   agentbox ralph --agent claude --max-iterations 10 --prd prd.json
+  agentbox ralph --agent claude-cli  # Use subscription auth (no API key needed)
   agentbox ralph --auto-commit=false  # Don't auto-commit changes`,
 	RunE: runRalph,
 }

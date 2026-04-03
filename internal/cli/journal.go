@@ -3,6 +3,7 @@ package cli
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 
 	"github.com/spf13/cobra"
 
@@ -20,6 +21,7 @@ observations throughout the development process.`,
 }
 
 var (
+	journalProject  string
 	journalLast     int
 	journalSprint   int
 	journalMarkdown bool
@@ -27,6 +29,7 @@ var (
 )
 
 func init() {
+	journalCmd.Flags().StringVarP(&journalProject, "project", "p", ".", "project directory")
 	journalCmd.Flags().IntVar(&journalLast, "last", 0, "show last N entries")
 	journalCmd.Flags().IntVar(&journalSprint, "sprint", 0, "filter by sprint number")
 	journalCmd.Flags().BoolVar(&journalMarkdown, "markdown", false, "render as markdown")
@@ -34,11 +37,18 @@ func init() {
 }
 
 func runJournal(cmd *cobra.Command, args []string) error {
-	s, sessionID, err := openLatestSession()
+	dbPath := filepath.Join(journalProject, ".agentbox", "agentbox.db")
+	s, err := store.Open(dbPath)
 	if err != nil {
-		return err
+		return fmt.Errorf("no agentbox database found at %s: %w", dbPath, err)
 	}
 	defer s.Close()
+
+	sess, err := s.LatestSession()
+	if err != nil {
+		return fmt.Errorf("no sessions found: %w", err)
+	}
+	sessionID := sess.ID
 
 	j := journal.New(s, sessionID)
 
@@ -49,9 +59,8 @@ func runJournal(cmd *cobra.Command, args []string) error {
 		}
 
 		if journalExport {
-			cwd, _ := os.Getwd()
-			path := cwd + "/.agentbox/journal.md"
-			_ = os.MkdirAll(cwd+"/.agentbox", 0755)
+			path := filepath.Join(journalProject, ".agentbox", "journal.md")
+			_ = os.MkdirAll(filepath.Join(journalProject, ".agentbox"), 0755)
 			if err := os.WriteFile(path, []byte(md), 0644); err != nil {
 				return err
 			}
