@@ -331,6 +331,156 @@ func TestAdaptiveController_Apply(t *testing.T) {
 	}
 }
 
+func TestAdaptiveController_Apply_SwitchAgent_WithFallback(t *testing.T) {
+	s := openTestStore(t)
+	sessionID, _ := s.CreateSession("", "main", "")
+	logger := testLogger()
+
+	ac := NewAdaptiveController(s, sessionID, logger)
+	ac.SetFallbackAgent("aider")
+
+	recs := []retro.Recommendation{
+		{Action: retro.RecSwitchAgent, Description: "Multiple consecutive failures — try switching to fallback agent"},
+	}
+
+	actions := ac.Apply(recs)
+
+	// Should have set switchRecommended flag.
+	recommended, agent := ac.SwitchRecommended()
+	if !recommended {
+		t.Error("expected SwitchRecommended() to return true")
+	}
+	if agent != "aider" {
+		t.Errorf("expected agent 'aider', got %q", agent)
+	}
+
+	// Action message should indicate the switch was recommended.
+	if len(actions) != 1 {
+		t.Fatalf("expected 1 action, got %d", len(actions))
+	}
+	if !strings.Contains(actions[0], "agent switch") {
+		t.Errorf("expected action to mention 'agent switch', got %q", actions[0])
+	}
+	if !strings.Contains(actions[0], "aider") {
+		t.Errorf("expected action to mention 'aider', got %q", actions[0])
+	}
+
+	// SwitchRecommended should be cleared after reading.
+	recommended2, _ := ac.SwitchRecommended()
+	if recommended2 {
+		t.Error("expected SwitchRecommended() to return false after first read")
+	}
+}
+
+func TestAdaptiveController_Apply_SwitchAgent_Idempotent(t *testing.T) {
+	s := openTestStore(t)
+	sessionID, _ := s.CreateSession("", "main", "")
+	logger := testLogger()
+
+	ac := NewAdaptiveController(s, sessionID, logger)
+	ac.SetFallbackAgent("aider")
+
+	recs := []retro.Recommendation{
+		{Action: retro.RecSwitchAgent, Description: "first switch"},
+	}
+	ac.Apply(recs)
+
+	// Clear the recommendation.
+	ac.SwitchRecommended()
+
+	// Second switch recommendation should be ignored (idempotency guard).
+	recs2 := []retro.Recommendation{
+		{Action: retro.RecSwitchAgent, Description: "second switch"},
+	}
+	actions2 := ac.Apply(recs2)
+
+	if len(actions2) != 1 {
+		t.Fatalf("expected 1 action, got %d", len(actions2))
+	}
+	if !strings.Contains(actions2[0], "already applied") {
+		t.Errorf("expected idempotency message, got %q", actions2[0])
+	}
+
+	recommended, _ := ac.SwitchRecommended()
+	if recommended {
+		t.Error("expected SwitchRecommended() to return false after idempotency guard")
+	}
+}
+
+func TestAdaptiveController_Apply_SwitchAgent_NoFallback(t *testing.T) {
+	s := openTestStore(t)
+	sessionID, _ := s.CreateSession("", "main", "")
+	logger := testLogger()
+
+	ac := NewAdaptiveController(s, sessionID, logger)
+	// No fallback configured — default behavior.
+
+	recs := []retro.Recommendation{
+		{Action: retro.RecSwitchAgent, Description: "try switching"},
+	}
+
+	actions := ac.Apply(recs)
+
+	// Should still produce a recommendation action (existing behavior).
+	if len(actions) != 1 {
+		t.Fatalf("expected 1 action, got %d", len(actions))
+	}
+	if !strings.Contains(actions[0], "Recommendation: switch agent") {
+		t.Errorf("expected recommendation action, got %q", actions[0])
+	}
+}
+
+func TestAdaptiveController_Apply_SwitchAgent_JournalEntry(t *testing.T) {
+	s := openTestStore(t)
+	sessionID, _ := s.CreateSession("", "main", "")
+	logger := testLogger()
+	j := journal.New(s, sessionID)
+
+	ac := NewAdaptiveController(s, sessionID, logger)
+	ac.SetJournal(j)
+	ac.SetFallbackAgent("amp")
+
+	recs := []retro.Recommendation{
+		{Action: retro.RecSwitchAgent, Description: "stuck — switch agent"},
+	}
+
+	ac.Apply(recs)
+
+	// Verify a journal entry was written for the agent switch.
+	entries, err := s.JournalEntries(sessionID, &store.JournalQuery{Kind: string(journal.KindAgentSwitch)})
+	if err != nil {
+		t.Fatalf("JournalEntries: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 agent_switch journal entry, got %d", len(entries))
+	}
+	if !strings.Contains(entries[0].Summary, "amp") {
+		t.Errorf("expected journal entry to mention 'amp', got %q", entries[0].Summary)
+	}
+}
+
+func TestSprintRunner_WiresFallbackAgent(t *testing.T) {
+	s, sessionID, collector, budget, j, logger := setupTestSupervisorDeps(t)
+	cfg := DefaultConfig()
+	cfg.Agent = "claude"
+	cfg.FallbackAgent = "aider"
+	cfg.JournalEnabled = true
+
+	tdb := taskdb.New()
+	sr := NewSprintRunner(cfg, s, sessionID, nil, tdb, collector, budget, j, nil, logger)
+
+	// The adaptive controller should have the fallback agent configured.
+	if sr.adaptive.fallbackAgent != "aider" {
+		t.Errorf("expected fallback agent 'aider', got %q", sr.adaptive.fallbackAgent)
+	}
+
+	// Verify SwitchRecommended is initially false.
+	recommended, _ := sr.SwitchRecommended()
+	if recommended {
+		t.Error("expected SwitchRecommended() to be false initially")
+	}
+}
+
 // MockAgentRunner provides configurable success/failure responses.
 type MockAgentRunner struct {
 	results []*ralph.IterationResult

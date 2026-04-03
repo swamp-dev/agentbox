@@ -24,3 +24,4 @@ dist/
 # Local testing
 test-project/
 *.local
+cover.out

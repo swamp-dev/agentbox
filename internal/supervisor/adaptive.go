@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/swamp-dev/agentbox/internal/journal"
 	"github.com/swamp-dev/agentbox/internal/retro"
 	"github.com/swamp-dev/agentbox/internal/store"
 )
@@ -16,11 +17,37 @@ type AdaptiveController struct {
 	store     *store.Store
 	sessionID int64
 	logger    *slog.Logger
+
+	// Fallback agent switching.
+	fallbackAgent     string
+	switchRecommended bool
+	switched          bool // idempotency guard — only switch once per session
+	journal           *journal.Journal
 }
 
 // NewAdaptiveController creates a new adaptive controller.
 func NewAdaptiveController(s *store.Store, sessionID int64, logger *slog.Logger) *AdaptiveController {
 	return &AdaptiveController{store: s, sessionID: sessionID, logger: logger}
+}
+
+// SetFallbackAgent configures the fallback agent name.
+func (ac *AdaptiveController) SetFallbackAgent(name string) {
+	ac.fallbackAgent = name
+}
+
+// SetJournal configures the journal for writing agent-switch entries.
+func (ac *AdaptiveController) SetJournal(j *journal.Journal) {
+	ac.journal = j
+}
+
+// SwitchRecommended returns whether an agent switch was recommended and the
+// target agent name. The recommendation is cleared after reading.
+func (ac *AdaptiveController) SwitchRecommended() (bool, string) {
+	if ac.switchRecommended {
+		ac.switchRecommended = false
+		return true, ac.fallbackAgent
+	}
+	return false, ""
 }
 
 // Apply processes recommendations and returns actions taken.
@@ -60,8 +87,28 @@ func (ac *AdaptiveController) Apply(recs []retro.Recommendation) []string {
 			}
 
 		case retro.RecSwitchAgent:
-			actions = append(actions, fmt.Sprintf("Recommendation: switch agent — %s", rec.Description))
-			ac.logger.Warn("agent switch recommended", "reason", rec.Description)
+			if ac.fallbackAgent != "" && !ac.switched {
+				ac.switchRecommended = true
+				ac.switched = true
+				actions = append(actions, fmt.Sprintf("Recommended agent switch to %s: %s", ac.fallbackAgent, rec.Description))
+				ac.logger.Info("agent switch recommended", "agent", ac.fallbackAgent, "reason", rec.Description)
+
+				if ac.journal != nil {
+					if err := ac.journal.Add(&store.JournalEntry{
+						Kind:       string(journal.KindAgentSwitch),
+						Summary:    fmt.Sprintf("Agent switch recommended to %s", ac.fallbackAgent),
+						Reflection: fmt.Sprintf("Adaptive controller recommends switching to fallback agent %q. Reason: %s", ac.fallbackAgent, rec.Description),
+					}); err != nil {
+						ac.logger.Warn("failed to write agent switch journal entry", "error", err)
+					}
+				}
+			} else if ac.switched {
+				actions = append(actions, fmt.Sprintf("Agent switch already applied, skipping: %s", rec.Description))
+				ac.logger.Info("agent switch already applied, ignoring duplicate recommendation", "reason", rec.Description)
+			} else {
+				actions = append(actions, fmt.Sprintf("Recommendation: switch agent — %s", rec.Description))
+				ac.logger.Warn("agent switch recommended but no fallback configured", "reason", rec.Description)
+			}
 
 		case retro.RecRollback:
 			actions = append(actions, fmt.Sprintf("Recommendation: rollback — %s", rec.Description))

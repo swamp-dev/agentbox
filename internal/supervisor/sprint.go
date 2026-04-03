@@ -63,6 +63,16 @@ func NewSprintRunner(
 	if runner == nil {
 		runner = &NoopAgentRunner{}
 	}
+	adaptive := NewAdaptiveController(s, sessionID, logger)
+
+	// Configure fallback agent if set.
+	if cfg.FallbackAgent != "" {
+		adaptive.SetFallbackAgent(cfg.FallbackAgent)
+	}
+	if j != nil {
+		adaptive.SetJournal(j)
+	}
+
 	return &SprintRunner{
 		cfg:        cfg,
 		store:      s,
@@ -73,7 +83,7 @@ func NewSprintRunner(
 		budget:     budget,
 		journal:    j,
 		ctxBuilder: NewContextBuilder(s, sessionID),
-		adaptive:   NewAdaptiveController(s, sessionID, logger),
+		adaptive:   adaptive,
 		runner:     runner,
 		logger:     logger,
 	}
@@ -334,6 +344,12 @@ func (sr *SprintRunner) writeSprintRetroEntry(report *retro.SprintReport) {
 // CurrentIteration returns the current iteration count.
 func (sr *SprintRunner) CurrentIteration() int {
 	return sr.iteration
+}
+
+// SwitchRecommended returns whether the adaptive controller recommended an
+// agent switch during the sprint, and the target agent name.
+func (sr *SprintRunner) SwitchRecommended() (bool, string) {
+	return sr.adaptive.SwitchRecommended()
 }
 
 func timePtr(t time.Time) *time.Time {
