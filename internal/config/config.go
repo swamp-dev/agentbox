@@ -161,37 +161,48 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("max_iterations must be at least 1")
 	}
 
-	// Supervisor validation: numeric fields must not be negative (0 means use default).
-	if c.Supervisor.SprintSize < 0 {
-		return fmt.Errorf("supervisor sprint_size must be >= 0 (0 uses default)")
-	}
-	if c.Supervisor.MaxSprints < 0 {
-		return fmt.Errorf("supervisor max_sprints must be >= 0 (0 uses default)")
-	}
-	if c.Supervisor.MaxConsecutiveFails < 0 {
-		return fmt.Errorf("supervisor max_consecutive_fails must be >= 0 (0 uses default)")
-	}
+	// Validate supervisor fields when the section is configured.
+	// We detect usage by checking if any field has a non-zero value.
+	sup := c.Supervisor
+	supervisorConfigured := sup.SprintSize != 0 || sup.MaxSprints != 0 ||
+		sup.MaxConsecutiveFails != 0 || sup.ReviewAgent != "" ||
+		sup.FallbackAgent != "" || sup.ReviewAfter != "" ||
+		sup.BudgetDuration != "" || sup.EscalationMethod != "" ||
+		sup.JournalEnabled || sup.ReviewEnabled
 
-	// Supervisor validation: review_after must be a known value.
-	if c.Supervisor.ReviewAfter != "" {
-		validReviewAfter := map[string]bool{"sprint": true, "task": true, "pr": true}
-		if !validReviewAfter[c.Supervisor.ReviewAfter] {
-			return fmt.Errorf("supervisor review_after must be sprint, task, or pr (got %q)", c.Supervisor.ReviewAfter)
+	if supervisorConfigured {
+		if sup.SprintSize < 1 {
+			return fmt.Errorf("sprint_size must be >= 1")
+		}
+		if sup.MaxSprints < 1 {
+			return fmt.Errorf("max_sprints must be >= 1")
+		}
+		if sup.MaxConsecutiveFails < 1 {
+			return fmt.Errorf("max_consecutive_fails must be >= 1")
 		}
 	}
 
-	// Supervisor validation: budget_duration must be a valid Go duration string.
-	if c.Supervisor.BudgetDuration != "" {
-		if _, err := time.ParseDuration(c.Supervisor.BudgetDuration); err != nil {
-			return fmt.Errorf("supervisor budget_duration is not a valid duration: %w", err)
+	if sup.ReviewAfter != "" {
+		validReviewAfter := map[string]bool{"sprint": true, "pr": true}
+		if !validReviewAfter[sup.ReviewAfter] {
+			return fmt.Errorf("invalid review_after: %s (must be sprint, pr, or empty)", sup.ReviewAfter)
+		}
+	}
+
+	// Validate budget_duration early so config errors are caught before the
+	// supervisor starts. The supervisor's ParseBudgetDuration will parse it
+	// again at runtime — this intentional duplication gives fast feedback.
+	if sup.BudgetDuration != "" {
+		if _, err := time.ParseDuration(sup.BudgetDuration); err != nil {
+			return fmt.Errorf("invalid budget_duration: %s", sup.BudgetDuration)
 		}
 	}
 
 	// Supervisor validation: escalation_method must be a known value.
-	if c.Supervisor.EscalationMethod != "" {
+	if sup.EscalationMethod != "" {
 		validEscalation := map[string]bool{"github_issue": true, "file": true, "none": true}
-		if !validEscalation[c.Supervisor.EscalationMethod] {
-			return fmt.Errorf("supervisor escalation_method must be github_issue, file, or none (got %q)", c.Supervisor.EscalationMethod)
+		if !validEscalation[sup.EscalationMethod] {
+			return fmt.Errorf("supervisor escalation_method must be github_issue, file, or none (got %q)", sup.EscalationMethod)
 		}
 	}
 
