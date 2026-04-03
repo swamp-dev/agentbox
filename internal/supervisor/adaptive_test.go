@@ -190,13 +190,13 @@ func TestWriteEscalation_CreatesFile(t *testing.T) {
 	ac := NewAdaptiveController(s, sessionID, nil, logger)
 
 	dir := t.TempDir()
-	err := ac.WriteEscalation(dir, "first escalation")
+	err := ac.WriteEscalation(context.Background(), dir, "first escalation")
 	if err != nil {
 		t.Fatalf("WriteEscalation: %v", err)
 	}
 
 	// Append a second one.
-	err = ac.WriteEscalation(dir, "second escalation")
+	err = ac.WriteEscalation(context.Background(), dir, "second escalation")
 	if err != nil {
 		t.Fatalf("WriteEscalation(2): %v", err)
 	}
@@ -411,7 +411,7 @@ func TestWriteEscalation_FileMethod(t *testing.T) {
 	ac.SetEscalationMethod("file")
 
 	dir := t.TempDir()
-	if err := ac.WriteEscalation(dir, "file escalation test"); err != nil {
+	if err := ac.WriteEscalation(context.Background(), dir, "file escalation test"); err != nil {
 		t.Fatalf("WriteEscalation: %v", err)
 	}
 
@@ -432,7 +432,7 @@ func TestWriteEscalation_NoneMethod(t *testing.T) {
 	ac.SetEscalationMethod("none")
 
 	dir := t.TempDir()
-	if err := ac.WriteEscalation(dir, "none escalation test"); err != nil {
+	if err := ac.WriteEscalation(context.Background(), dir, "none escalation test"); err != nil {
 		t.Fatalf("WriteEscalation: %v", err)
 	}
 
@@ -454,7 +454,7 @@ func TestWriteEscalation_GitHubIssueMethod(t *testing.T) {
 	ac.SetCommandExecutor(mock)
 
 	dir := t.TempDir()
-	if err := ac.WriteEscalation(dir, "task T-1 failed 3 times"); err != nil {
+	if err := ac.WriteEscalation(context.Background(), dir, "task T-1 failed 3 times"); err != nil {
 		t.Fatalf("WriteEscalation: %v", err)
 	}
 
@@ -474,9 +474,6 @@ func TestWriteEscalation_GitHubIssueMethod(t *testing.T) {
 	args := strings.Join(call.Args, " ")
 	if !strings.Contains(args, "issue") || !strings.Contains(args, "create") {
 		t.Errorf("expected 'issue create' in args, got %q", args)
-	}
-	if !strings.Contains(args, "agentbox-escalation") {
-		t.Errorf("expected label 'agentbox-escalation' in args, got %q", args)
 	}
 	if !strings.Contains(args, "task T-1 failed 3 times") {
 		t.Errorf("expected escalation message in title args, got %q", args)
@@ -499,7 +496,7 @@ func TestWriteEscalation_GitHubIssueMethod_Error(t *testing.T) {
 	mock := &mockCommandExecutor{err: fmt.Errorf("gh: not authenticated")}
 	ac.SetCommandExecutor(mock)
 
-	err := ac.WriteEscalation(t.TempDir(), "failing escalation")
+	err := ac.WriteEscalation(context.Background(), t.TempDir(), "failing escalation")
 	if err == nil {
 		t.Fatal("expected error when gh fails")
 	}
@@ -516,7 +513,7 @@ func TestWriteEscalation_DefaultMethodIsFile(t *testing.T) {
 	// Don't set escalation method — should default to "file".
 
 	dir := t.TempDir()
-	if err := ac.WriteEscalation(dir, "default method test"); err != nil {
+	if err := ac.WriteEscalation(context.Background(), dir, "default method test"); err != nil {
 		t.Fatalf("WriteEscalation: %v", err)
 	}
 
@@ -539,6 +536,8 @@ func TestTruncate(t *testing.T) {
 		{"short string", "hello", 10, "hello"},
 		{"exact length", "hello", 5, "hello"},
 		{"truncated", "hello world this is long", 10, "hello w..."},
+		{"utf8 multibyte", "こんにちは世界です", 6, "こんに..."},
+		{"utf8 short enough", "日本語", 5, "日本語"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

@@ -233,7 +233,7 @@ func (ac *AdaptiveController) generateSubtasks(parent *taskdb.Task, description 
 
 // WriteEscalation routes an escalation message based on the configured method.
 // It returns an optional result string (e.g., the issue URL for github_issue).
-func (ac *AdaptiveController) WriteEscalation(workDir, message string) error {
+func (ac *AdaptiveController) WriteEscalation(ctx context.Context, workDir, message string) error {
 	method := ac.escalationMethod
 	if method == "" {
 		method = "file"
@@ -245,7 +245,7 @@ func (ac *AdaptiveController) WriteEscalation(workDir, message string) error {
 		return nil
 
 	case "github_issue":
-		url, err := ac.createGitHubIssue(workDir, message)
+		url, err := ac.createGitHubIssue(ctx, workDir, message)
 		if err != nil {
 			return fmt.Errorf("creating GitHub issue: %w", err)
 		}
@@ -276,7 +276,7 @@ func (ac *AdaptiveController) writeEscalationFile(workDir, message string) error
 }
 
 // createGitHubIssue creates a GitHub issue with escalation details via gh CLI.
-func (ac *AdaptiveController) createGitHubIssue(workDir, message string) (string, error) {
+func (ac *AdaptiveController) createGitHubIssue(ctx context.Context, workDir, message string) (string, error) {
 	executor := ac.cmdExecutor
 	if executor == nil {
 		executor = &execCommandExecutor{}
@@ -286,13 +286,12 @@ func (ac *AdaptiveController) createGitHubIssue(workDir, message string) (string
 	body := fmt.Sprintf("## Escalation\n\n**Time:** %s\n\n%s\n\n---\n_Created automatically by agentbox_",
 		time.Now().Format("2006-01-02 15:04:05"), message)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	execCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
-	out, err := executor.Execute(ctx, workDir, "gh", "issue", "create",
+	out, err := executor.Execute(execCtx, workDir, "gh", "issue", "create",
 		"--title", title,
 		"--body", body,
-		"--label", "agentbox-escalation",
 	)
 	if err != nil {
 		return "", err
@@ -300,10 +299,11 @@ func (ac *AdaptiveController) createGitHubIssue(workDir, message string) (string
 	return strings.TrimSpace(out), nil
 }
 
-// truncate shortens a string to maxLen, adding "..." if truncated.
+// truncate shortens a string to maxLen runes, adding "..." if truncated.
 func truncate(s string, maxLen int) string {
-	if len(s) <= maxLen {
+	runes := []rune(s)
+	if len(runes) <= maxLen {
 		return s
 	}
-	return s[:maxLen-3] + "..."
+	return string(runes[:maxLen-3]) + "..."
 }

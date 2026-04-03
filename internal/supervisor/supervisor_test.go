@@ -1625,7 +1625,7 @@ func TestAdaptiveController_WriteEscalation(t *testing.T) {
 	ac := NewAdaptiveController(s, sessionID, nil, logger)
 
 	dir := t.TempDir()
-	err = ac.WriteEscalation(dir, "System is stuck on auth module")
+	err = ac.WriteEscalation(context.Background(), dir, "System is stuck on auth module")
 	if err != nil {
 		t.Fatalf("WriteEscalation: %v", err)
 	}
