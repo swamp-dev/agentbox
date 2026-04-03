@@ -150,6 +150,30 @@ func TestAddDependency_PreventsCycle(t *testing.T) {
 	}
 }
 
+func TestUpdatePriority(t *testing.T) {
+	db := New()
+	if err := db.Add(&Task{ID: "t-1", Title: "Test", Status: StatusPending, Priority: 1}); err != nil {
+		t.Fatalf("setup Add: %v", err)
+	}
+
+	if err := db.UpdatePriority("t-1", 99); err != nil {
+		t.Fatalf("UpdatePriority: %v", err)
+	}
+
+	got, _ := db.Get("t-1")
+	if got.Priority != 99 {
+		t.Errorf("expected priority 99, got %d", got.Priority)
+	}
+}
+
+func TestUpdatePriority_NotFound(t *testing.T) {
+	db := New()
+	err := db.UpdatePriority("nonexistent", 5)
+	if err == nil {
+		t.Error("expected error for nonexistent task")
+	}
+}
+
 func TestSplitTask(t *testing.T) {
 	db := New()
 	if err := db.Add(&Task{ID: "big", Title: "Big task", Status: StatusPending, Priority: 1}); err != nil {
@@ -299,6 +323,90 @@ func TestSaveAndLoad(t *testing.T) {
 	}
 	if loaded.Tasks["t-2"].Status != StatusCompleted {
 		t.Errorf("expected t-2 completed, got %s", loaded.Tasks["t-2"].Status)
+	}
+}
+
+func TestAdjustPriority(t *testing.T) {
+	tests := []struct {
+		name         string
+		initial      int
+		delta        int
+		wantPriority int
+		wantErr      bool
+	}{
+		{"positive delta", 5, 10, 15, false},
+		{"negative delta", 15, -5, 10, false},
+		{"caps at max", 95, 10, MaxPriority, false},
+		{"caps at zero", 5, -10, 0, false},
+		{"exact max", 90, 10, MaxPriority, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			db := New()
+			if err := db.Add(&Task{ID: "t-1", Title: "Test", Status: StatusPending, Priority: tt.initial}); err != nil {
+				t.Fatalf("setup Add: %v", err)
+			}
+
+			got, err := db.AdjustPriority("t-1", tt.delta)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("AdjustPriority() error = %v, wantErr %v", err, tt.wantErr)
+			}
+			if got != tt.wantPriority {
+				t.Errorf("AdjustPriority() = %d, want %d", got, tt.wantPriority)
+			}
+
+			task, _ := db.Get("t-1")
+			if task.Priority != tt.wantPriority {
+				t.Errorf("task.Priority = %d, want %d", task.Priority, tt.wantPriority)
+			}
+		})
+	}
+}
+
+func TestAdjustPriority_NotFound(t *testing.T) {
+	db := New()
+	_, err := db.AdjustPriority("nonexistent", 5)
+	if err == nil {
+		t.Error("expected error for nonexistent task")
+	}
+}
+
+func TestCompletedTasks(t *testing.T) {
+	db := New()
+	for _, task := range []*Task{
+		{ID: "t-1", Title: "Done 1", Status: StatusCompleted},
+		{ID: "t-2", Title: "Pending", Status: StatusPending},
+		{ID: "t-3", Title: "Done 2", Status: StatusCompleted},
+		{ID: "t-4", Title: "Failed", Status: StatusFailed},
+	} {
+		if err := db.Add(task); err != nil {
+			t.Fatalf("setup Add(%s): %v", task.ID, err)
+		}
+	}
+
+	completed := db.CompletedTasks()
+	if len(completed) != 2 {
+		t.Errorf("expected 2 completed tasks, got %d", len(completed))
+	}
+}
+
+func TestTasksByStatus(t *testing.T) {
+	db := New()
+	for _, task := range []*Task{
+		{ID: "t-1", Title: "Done", Status: StatusCompleted},
+		{ID: "t-2", Title: "Pending", Status: StatusPending},
+		{ID: "t-3", Title: "Failed", Status: StatusFailed},
+		{ID: "t-4", Title: "Deferred", Status: StatusDeferred},
+	} {
+		if err := db.Add(task); err != nil {
+			t.Fatalf("setup Add(%s): %v", task.ID, err)
+		}
+	}
+
+	result := db.TasksByStatus(StatusFailed, StatusDeferred)
+	if len(result) != 2 {
+		t.Errorf("expected 2 tasks, got %d", len(result))
 	}
 }
 

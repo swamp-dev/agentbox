@@ -63,7 +63,7 @@ func NewSprintRunner(
 	if runner == nil {
 		runner = &NoopAgentRunner{}
 	}
-	adaptive := NewAdaptiveController(s, sessionID, logger)
+	adaptive := NewAdaptiveController(s, sessionID, tdb, logger)
 
 	// Configure fallback agent if set.
 	if cfg.FallbackAgent != "" {

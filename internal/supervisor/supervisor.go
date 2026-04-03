@@ -75,12 +75,14 @@ func New(cfg *Config, logger *slog.Logger) (*Supervisor, error) {
 	// Create journal.
 	j := journal.New(s, sessionID)
 
+	tdb := taskdb.New()
+
 	return &Supervisor{
 		cfg:       cfg,
 		store:     s,
 		sessionID: sessionID,
 		workflow:  wf,
-		taskDB:    taskdb.New(),
+		taskDB:    tdb,
 		collector: collector,
 		budget:    budget,
 		journal:   j,
@@ -454,25 +456,18 @@ func (s *Supervisor) generatePRBody() (string, error) {
 
 	// Completed tasks.
 	body += "## Completed Tasks\n\n"
-	for _, task := range s.taskDB.Tasks {
-		if task.Status == taskdb.StatusCompleted {
-			body += fmt.Sprintf("- [x] %s: %s\n", task.ID, task.Title)
-		}
+	for _, task := range s.taskDB.CompletedTasks() {
+		body += fmt.Sprintf("- [x] %s: %s\n", task.ID, task.Title)
 	}
 	body += "\n"
 
 	// Failed/deferred tasks.
-	hasIssues := false
-	for _, task := range s.taskDB.Tasks {
-		if task.Status == taskdb.StatusFailed || task.Status == taskdb.StatusDeferred {
-			if !hasIssues {
-				body += "## Unresolved\n\n"
-				hasIssues = true
-			}
+	unresolvedTasks := s.taskDB.TasksByStatus(taskdb.StatusFailed, taskdb.StatusDeferred)
+	if len(unresolvedTasks) > 0 {
+		body += "## Unresolved\n\n"
+		for _, task := range unresolvedTasks {
 			body += fmt.Sprintf("- [ ] %s: %s (%s)\n", task.ID, task.Title, task.Status)
 		}
-	}
-	if hasIssues {
 		body += "\n"
 	}
 
