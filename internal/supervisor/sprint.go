@@ -69,6 +69,9 @@ func NewSprintRunner(
 	if cfg.FallbackAgent != "" {
 		adaptive.SetFallbackAgent(cfg.FallbackAgent)
 	}
+	if cfg.EscalationMethod != "" {
+		adaptive.SetEscalationMethod(cfg.EscalationMethod)
+	}
 	if j != nil {
 		adaptive.SetJournal(j)
 	}

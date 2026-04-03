@@ -1,9 +1,12 @@
 package supervisor
 
 import (
+	"bytes"
+	"context"
 	"fmt"
 	"log/slog"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -13,6 +16,29 @@ import (
 	"github.com/swamp-dev/agentbox/internal/store"
 	"github.com/swamp-dev/agentbox/internal/taskdb"
 )
+
+// CommandExecutor abstracts command execution for testing.
+type CommandExecutor interface {
+	// Execute runs a command and returns its combined stdout, or an error.
+	Execute(ctx context.Context, dir string, name string, args ...string) (string, error)
+}
+
+// execCommandExecutor is the real implementation that runs exec.CommandContext.
+type execCommandExecutor struct{}
+
+func (e *execCommandExecutor) Execute(ctx context.Context, dir string, name string, args ...string) (string, error) {
+	cmd := exec.CommandContext(ctx, name, args...)
+	if dir != "" {
+		cmd.Dir = dir
+	}
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return "", fmt.Errorf("%s: %s: %w", name, stderr.String(), err)
+	}
+	return stdout.String(), nil
+}
 
 // AdaptiveController applies retrospective recommendations.
 type AdaptiveController struct {
@@ -26,6 +52,10 @@ type AdaptiveController struct {
 	switchRecommended bool
 	switched          bool // idempotency guard — only switch once per session
 	journal           *journal.Journal
+
+	// Escalation settings.
+	escalationMethod string          // "github_issue", "file", "none"
+	cmdExecutor      CommandExecutor // injectable for testing gh CLI calls
 }
 
 // NewAdaptiveController creates a new adaptive controller.
@@ -42,6 +72,17 @@ func (ac *AdaptiveController) SetFallbackAgent(name string) {
 // SetJournal configures the journal for writing agent-switch entries.
 func (ac *AdaptiveController) SetJournal(j *journal.Journal) {
 	ac.journal = j
+}
+
+// SetEscalationMethod configures how escalations are delivered.
+// Valid values: "github_issue", "file", "none". Default is "file".
+func (ac *AdaptiveController) SetEscalationMethod(method string) {
+	ac.escalationMethod = method
+}
+
+// SetCommandExecutor overrides the command executor (used for testing).
+func (ac *AdaptiveController) SetCommandExecutor(executor CommandExecutor) {
+	ac.cmdExecutor = executor
 }
 
 // SwitchRecommended returns whether an agent switch was recommended and the
@@ -190,8 +231,34 @@ func (ac *AdaptiveController) generateSubtasks(parent *taskdb.Task, description 
 	}
 }
 
-// WriteEscalation appends an escalation message to the escalation log.
+// WriteEscalation routes an escalation message based on the configured method.
+// It returns an optional result string (e.g., the issue URL for github_issue).
 func (ac *AdaptiveController) WriteEscalation(workDir, message string) error {
+	method := ac.escalationMethod
+	if method == "" {
+		method = "file"
+	}
+
+	switch method {
+	case "none":
+		ac.logger.Warn("escalation (log only)", "message", message)
+		return nil
+
+	case "github_issue":
+		url, err := ac.createGitHubIssue(workDir, message)
+		if err != nil {
+			return fmt.Errorf("creating GitHub issue: %w", err)
+		}
+		ac.logger.Info("escalation created as GitHub issue", "url", url)
+		return nil
+
+	default: // "file"
+		return ac.writeEscalationFile(workDir, message)
+	}
+}
+
+// writeEscalationFile appends an escalation message to the local escalation log.
+func (ac *AdaptiveController) writeEscalationFile(workDir, message string) error {
 	path := filepath.Join(workDir, ".agentbox", "escalations.md")
 	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
 		return err
@@ -206,4 +273,37 @@ func (ac *AdaptiveController) WriteEscalation(workDir, message string) error {
 	entry := fmt.Sprintf("\n## %s\n\n%s\n", time.Now().Format("2006-01-02 15:04:05"), message)
 	_, err = f.WriteString(entry)
 	return err
+}
+
+// createGitHubIssue creates a GitHub issue with escalation details via gh CLI.
+func (ac *AdaptiveController) createGitHubIssue(workDir, message string) (string, error) {
+	executor := ac.cmdExecutor
+	if executor == nil {
+		executor = &execCommandExecutor{}
+	}
+
+	title := "agentbox escalation: " + truncate(message, 60)
+	body := fmt.Sprintf("## Escalation\n\n**Time:** %s\n\n%s\n\n---\n_Created automatically by agentbox_",
+		time.Now().Format("2006-01-02 15:04:05"), message)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	out, err := executor.Execute(ctx, workDir, "gh", "issue", "create",
+		"--title", title,
+		"--body", body,
+		"--label", "agentbox-escalation",
+	)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(out), nil
+}
+
+// truncate shortens a string to maxLen, adding "..." if truncated.
+func truncate(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	return s[:maxLen-3] + "..."
 }
