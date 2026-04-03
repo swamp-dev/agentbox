@@ -254,6 +254,10 @@ func (db *DB) SplitTask(parentID string, subtasks []*Task) error {
 	db.mu.Lock()
 	defer db.mu.Unlock()
 
+	if len(subtasks) == 0 {
+		return fmt.Errorf("subtasks must not be empty")
+	}
+
 	parent, ok := db.Tasks[parentID]
 	if !ok {
 		return fmt.Errorf("task %s not found", parentID)
@@ -263,8 +267,14 @@ func (db *DB) SplitTask(parentID string, subtasks []*Task) error {
 		sub.ParentID = parentID
 		sub.DependsOn = append(sub.DependsOn, parent.DependsOn...)
 		// If subtask ID already exists (idempotent re-split), generate a unique ID.
-		if _, exists := db.Tasks[sub.ID]; exists {
-			sub.ID = sub.ID + "-" + strconv.Itoa(len(db.Tasks))
+		originalID := sub.ID
+		suffix := 1
+		for {
+			if _, exists := db.Tasks[sub.ID]; !exists {
+				break
+			}
+			sub.ID = originalID + "-" + strconv.Itoa(suffix)
+			suffix++
 		}
 		if err := db.addLocked(sub); err != nil {
 			return fmt.Errorf("adding subtask %s: %w", sub.ID, err)
@@ -347,6 +357,8 @@ func (db *DB) MergeTasks(newTask *Task, oldIDs []string) error {
 
 // IsComplete returns true if all non-deferred tasks are completed.
 func (db *DB) IsComplete() bool {
+	db.mu.RLock()
+	defer db.mu.RUnlock()
 	for _, t := range db.Tasks {
 		if t.Status != StatusCompleted && t.Status != StatusDeferred {
 			return false
@@ -357,6 +369,8 @@ func (db *DB) IsComplete() bool {
 
 // Stats returns task count statistics.
 func (db *DB) Stats() (total, completed, pending, failed, deferred int) {
+	db.mu.RLock()
+	defer db.mu.RUnlock()
 	for _, t := range db.Tasks {
 		total++
 		switch t.Status {
@@ -408,7 +422,9 @@ func (db *DB) TasksByStatus(statuses ...TaskStatus) []Task {
 
 // Save persists the task DB to a JSON file.
 func (db *DB) Save(path string) error {
+	db.mu.RLock()
 	data, err := json.MarshalIndent(db, "", "  ")
+	db.mu.RUnlock()
 	if err != nil {
 		return fmt.Errorf("marshaling task DB: %w", err)
 	}
