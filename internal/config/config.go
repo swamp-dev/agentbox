@@ -194,7 +194,7 @@ func (c *Config) Validate() error {
 	// again at runtime — this intentional duplication gives fast feedback.
 	if sup.BudgetDuration != "" {
 		if _, err := time.ParseDuration(sup.BudgetDuration); err != nil {
-			return fmt.Errorf("invalid budget_duration: %s", sup.BudgetDuration)
+			return fmt.Errorf("invalid budget_duration: %w", err)
 		}
 	}
 
@@ -202,7 +202,7 @@ func (c *Config) Validate() error {
 	if sup.EscalationMethod != "" {
 		validEscalation := map[string]bool{"github_issue": true, "file": true, "none": true}
 		if !validEscalation[sup.EscalationMethod] {
-			return fmt.Errorf("supervisor escalation_method must be github_issue, file, or none (got %q)", sup.EscalationMethod)
+			return fmt.Errorf("invalid escalation_method: must be github_issue, file, or none (got %q)", sup.EscalationMethod)
 		}
 	}
 

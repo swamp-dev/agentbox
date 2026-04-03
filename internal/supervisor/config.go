@@ -22,7 +22,7 @@ type Config struct {
 	FallbackAgent string `yaml:"fallback_agent" json:"fallback_agent"`
 
 	// Review settings.
-	ReviewAfter     string `yaml:"review_after" json:"review_after"` // "sprint", "task", "pr"
+	ReviewAfter     string `yaml:"review_after" json:"review_after"` // "sprint" or "pr"
 	MaxReviewRounds int    `yaml:"max_review_rounds" json:"max_review_rounds"`
 
 	// Budget.
