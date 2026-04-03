@@ -1698,8 +1698,6 @@ func TestNewForResume_LoadsSessionAndTasks(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newForResumeWithStore: %v", err)
 	}
-	// Don't let cleanup close the store twice.
-	defer func() { _ = recover() }()
 
 	// Verify session ID.
 	if sup.SessionID() != sessionID {
@@ -1744,13 +1742,14 @@ func TestNewForResume_LoadsSessionAndTasks(t *testing.T) {
 		t.Errorf("expected t-2 to depend on t-1, got %v", task2.DependsOn)
 	}
 
-	// Verify session is now running again.
+	// Verify session is still "interrupted" — status changes to "running"
+	// only when Resume() is actually called, not in the constructor.
 	sess, err := s.GetSession(sessionID)
 	if err != nil {
 		t.Fatalf("GetSession: %v", err)
 	}
-	if sess.Status != "running" {
-		t.Errorf("expected session status 'running', got %q", sess.Status)
+	if sess.Status != "interrupted" {
+		t.Errorf("expected session status 'interrupted' (not updated until Resume), got %q", sess.Status)
 	}
 }
 
@@ -1776,6 +1775,21 @@ func TestNewForResume_RejectsFailedSession(t *testing.T) {
 	_, err := newForResumeWithStore(s, sessionID, t.TempDir(), testLogger())
 	if err == nil {
 		t.Fatal("expected error for failed session")
+	}
+	if !strings.Contains(err.Error(), "not resumable") {
+		t.Errorf("expected 'not resumable' error, got: %v", err)
+	}
+}
+
+func TestNewForResume_RejectsRunningSession(t *testing.T) {
+	s := openTestStore(t)
+	sessionID, _ := s.CreateSession("", "main", `{}`)
+	// Default status is "running" — should not be resumable to avoid
+	// concurrent writers.
+
+	_, err := newForResumeWithStore(s, sessionID, t.TempDir(), testLogger())
+	if err == nil {
+		t.Fatal("expected error for running session")
 	}
 	if !strings.Contains(err.Error(), "not resumable") {
 		t.Errorf("expected 'not resumable' error, got: %v", err)

@@ -1071,16 +1071,17 @@ func TestLatestResumableSession(t *testing.T) {
 		t.Errorf("expected status 'interrupted', got %q", sess.Status)
 	}
 
-	// Create a running session — should be preferred (more recent).
-	id3, _ := s.CreateSession("repo3", "feat/c", `{}`)
+	// Create a running session — should NOT be resumable (risk of concurrent writers).
+	_, _ = s.CreateSession("repo3", "feat/c", `{}`)
 	// Default status is "running".
 
+	// The interrupted session (id2) should still be returned, not the running one.
 	sess, err = s.LatestResumableSession()
 	if err != nil {
 		t.Fatalf("LatestResumableSession: %v", err)
 	}
-	if sess.ID != id3 {
-		t.Errorf("expected session %d (running), got %d", id3, sess.ID)
+	if sess.ID != id2 {
+		t.Errorf("expected session %d (interrupted), got %d", id2, sess.ID)
 	}
 }
 

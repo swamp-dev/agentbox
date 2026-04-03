@@ -68,6 +68,11 @@ func init() {
 }
 
 func runSprint(cmd *cobra.Command, args []string) error {
+	// Validate: --session requires --resume.
+	if sprintSessionID != 0 && !sprintResume {
+		return fmt.Errorf("--session requires --resume")
+	}
+
 	// Handle resume mode.
 	if sprintResume {
 		return runResume(cmd)
@@ -196,6 +201,13 @@ func runResume(cmd *cobra.Command) error {
 	sup, err := supervisor.NewForResume(sessionID, logger)
 	if err != nil {
 		return fmt.Errorf("initializing supervisor for resume: %w", err)
+	}
+
+	// Apply budget timeout, same as runSprint (S4).
+	if sup.Config().Budget.MaxDuration > 0 {
+		var budgetCancel context.CancelFunc
+		ctx, budgetCancel = context.WithTimeout(ctx, sup.Config().Budget.MaxDuration)
+		defer budgetCancel()
 	}
 
 	return sup.Resume(ctx)

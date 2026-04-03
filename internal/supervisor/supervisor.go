@@ -109,24 +109,22 @@ func NewForResume(sessionID int64, logger *slog.Logger) (*Supervisor, error) {
 }
 
 // newForResumeWithStore is the internal constructor for resume, allowing
-// tests to inject a store directly.
+// tests to inject a store directly. On success the Supervisor takes ownership
+// of the store (caller must not close it). On error the caller still owns it.
 func newForResumeWithStore(s *store.Store, sessionID int64, workDir string, logger *slog.Logger) (*Supervisor, error) {
 	sess, err := s.GetSession(sessionID)
 	if err != nil {
-		s.Close()
 		return nil, fmt.Errorf("loading session: %w", err)
 	}
 
-	if sess.Status != "interrupted" && sess.Status != "running" {
-		s.Close()
-		return nil, fmt.Errorf("session %d has status %q, not resumable (must be 'interrupted' or 'running')", sessionID, sess.Status)
+	if sess.Status != "interrupted" {
+		return nil, fmt.Errorf("session %d has status %q, not resumable (must be 'interrupted')", sessionID, sess.Status)
 	}
 
 	// Restore config from session.
 	cfg := DefaultConfig()
 	if sess.ConfigJSON != "" {
 		if err := json.Unmarshal([]byte(sess.ConfigJSON), cfg); err != nil {
-			s.Close()
 			return nil, fmt.Errorf("parsing session config: %w", err)
 		}
 	}
@@ -146,7 +144,6 @@ func newForResumeWithStore(s *store.Store, sessionID int64, workDir string, logg
 	tdb := taskdb.New()
 	tasks, err := s.ListTasks(sessionID)
 	if err != nil {
-		s.Close()
 		return nil, fmt.Errorf("loading tasks: %w", err)
 	}
 
@@ -186,7 +183,6 @@ func newForResumeWithStore(s *store.Store, sessionID int64, workDir string, logg
 		}
 
 		if err := tdb.Add(task); err != nil {
-			s.Close()
 			return nil, fmt.Errorf("restoring task %s: %w", st.ID, err)
 		}
 	}
@@ -195,12 +191,6 @@ func newForResumeWithStore(s *store.Store, sessionID int64, workDir string, logg
 	collector := metrics.NewCollector(s, sessionID)
 	budget := metrics.NewBudgetEnforcer(cfg.Budget)
 	j := journal.New(s, sessionID)
-
-	// Mark session as running again.
-	if err := s.UpdateSessionStatus(sessionID, "running"); err != nil {
-		s.Close()
-		return nil, fmt.Errorf("updating session status: %w", err)
-	}
 
 	return &Supervisor{
 		cfg:       cfg,
@@ -220,14 +210,21 @@ func newForResumeWithStore(s *store.Store, sessionID int64, workDir string, logg
 func (s *Supervisor) Resume(ctx context.Context) error {
 	defer s.store.Close()
 
+	// Mark session as running now that Resume has actually been called.
+	if err := s.store.UpdateSessionStatus(s.sessionID, "running"); err != nil {
+		return fmt.Errorf("updating session status: %w", err)
+	}
+
 	// Determine where we left off.
 	lastSprint, err := s.store.MaxSprintForSession(s.sessionID)
 	if err != nil {
 		return fmt.Errorf("determining last sprint: %w", err)
 	}
-	lastIter, err := s.store.MaxIterationForSession(s.sessionID)
+	// Use last completed iteration: count successful attempts for this session
+	// rather than resource_usage (which tracks started, not completed, iterations).
+	lastIter, err := s.store.MaxCompletedIterationForSession(s.sessionID)
 	if err != nil {
-		return fmt.Errorf("determining last iteration: %w", err)
+		return fmt.Errorf("determining last completed iteration: %w", err)
 	}
 
 	startSprint := lastSprint + 1
@@ -255,6 +252,15 @@ func (s *Supervisor) Resume(ctx context.Context) error {
 		}
 	}
 
+	// Hard error if the worktree doesn't exist in non-dry-run mode (C2).
+	if !s.cfg.DryRun {
+		worktreePath := s.workflow.WorktreePath()
+		if worktreePath == "" {
+			_ = s.store.UpdateSessionStatus(s.sessionID, "failed")
+			return fmt.Errorf("worktree not found for branch %s — cannot resume (was the worktree deleted?)", s.cfg.BranchName)
+		}
+	}
+
 	if s.cfg.JournalEnabled {
 		_ = s.journal.Add(&store.JournalEntry{
 			Kind:       string(journal.KindReflection),
@@ -272,21 +278,19 @@ func (s *Supervisor) Resume(ctx context.Context) error {
 	var loop *ralph.Loop
 	if !s.cfg.DryRun {
 		worktreePath := s.workflow.WorktreePath()
-		if worktreePath != "" {
-			ralphCfg := s.cfg.ToRalphConfig()
-			var err error
-			loop, err = ralph.NewLoop(ralphCfg, worktreePath, s.logger)
-			if err != nil {
-				_ = s.store.UpdateSessionStatus(s.sessionID, "failed")
-				return fmt.Errorf("creating ralph loop: %w", err)
-			}
-			defer func() {
-				if closeErr := loop.Close(); closeErr != nil {
-					s.logger.Warn("failed to close ralph loop", "error", closeErr)
-				}
-			}()
-			agentRunner = NewRalphAgentRunner(loop)
+		ralphCfg := s.cfg.ToRalphConfig()
+		var loopErr error
+		loop, loopErr = ralph.NewLoop(ralphCfg, worktreePath, s.logger)
+		if loopErr != nil {
+			_ = s.store.UpdateSessionStatus(s.sessionID, "failed")
+			return fmt.Errorf("creating ralph loop: %w", loopErr)
 		}
+		defer func() {
+			if closeErr := loop.Close(); closeErr != nil {
+				s.logger.Warn("failed to close ralph loop", "error", closeErr)
+			}
+		}()
+		agentRunner = NewRalphAgentRunner(loop)
 	}
 
 	// Sprint loop — picks up where we left off.
@@ -320,6 +324,24 @@ func (s *Supervisor) Resume(ctx context.Context) error {
 		}
 
 		iteration = runner.CurrentIteration()
+
+		// Check if adaptive controller recommended an agent switch (S5).
+		if recommended, newAgent := runner.SwitchRecommended(); recommended && !s.cfg.DryRun {
+			s.logger.Info("rebuilding agent runner for next sprint", "new_agent", newAgent)
+			s.cfg.Agent = newAgent
+
+			if closeErr := loop.Close(); closeErr != nil {
+				s.logger.Warn("failed to close old ralph loop", "error", closeErr)
+			}
+			ralphCfg := s.cfg.ToRalphConfig()
+			newLoop, switchErr := ralph.NewLoop(ralphCfg, s.workflow.WorktreePath(), s.logger)
+			if switchErr != nil {
+				s.logger.Error("failed to create ralph loop with new agent", "agent", newAgent, "error", switchErr)
+			} else {
+				loop = newLoop
+				agentRunner = NewRalphAgentRunner(loop)
+			}
+		}
 
 		if result.BudgetExceeded {
 			s.logger.Warn("stopping: budget exceeded")
@@ -750,8 +772,13 @@ func FindResumableSession(workDir string) (*store.Session, error) {
 		return nil, err
 	}
 	// Return a copy so the store can be safely closed.
-	copy := *sess
-	return &copy, nil
+	result := *sess
+	return &result, nil
+}
+
+// Config returns the supervisor's configuration.
+func (s *Supervisor) Config() *Config {
+	return s.cfg
 }
 
 // SessionID returns the current session ID.
