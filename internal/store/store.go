@@ -141,6 +141,55 @@ func (s *Store) LatestSession() (*Session, error) {
 	return sess, err
 }
 
+// LatestResumableSession returns the most recent session with status
+// "interrupted" or "running". Returns an error if no resumable session exists.
+func (s *Store) LatestResumableSession() (*Session, error) {
+	sess := &Session{}
+	err := s.db.QueryRow(
+		`SELECT id, started_at, repo_url, branch_name, status, COALESCE(config_json, '')
+		 FROM sessions WHERE status IN ('interrupted', 'running')
+		 ORDER BY id DESC LIMIT 1`,
+	).Scan(&sess.ID, &sess.StartedAt, &sess.RepoURL, &sess.BranchName, &sess.Status, &sess.ConfigJSON)
+	if err == sql.ErrNoRows {
+		return nil, fmt.Errorf("no resumable sessions found")
+	}
+	return sess, err
+}
+
+// MaxIterationForSession returns the highest iteration number from attempts
+// for a given session. Returns 0 if no attempts exist.
+func (s *Store) MaxIterationForSession(sessionID int64) (int, error) {
+	var maxIter sql.NullInt64
+	err := s.db.QueryRow(
+		`SELECT MAX(ru.iteration) FROM resource_usage ru WHERE ru.session_id = ?`,
+		sessionID,
+	).Scan(&maxIter)
+	if err != nil {
+		return 0, err
+	}
+	if maxIter.Valid {
+		return int(maxIter.Int64), nil
+	}
+	return 0, nil
+}
+
+// MaxSprintForSession returns the highest sprint number from sprint_reports
+// for a given session. Returns 0 if no reports exist.
+func (s *Store) MaxSprintForSession(sessionID int64) (int, error) {
+	var maxSprint sql.NullInt64
+	err := s.db.QueryRow(
+		`SELECT MAX(sprint_number) FROM sprint_reports WHERE session_id = ?`,
+		sessionID,
+	).Scan(&maxSprint)
+	if err != nil {
+		return 0, err
+	}
+	if maxSprint.Valid {
+		return int(maxSprint.Int64), nil
+	}
+	return 0, nil
+}
+
 // --- Task CRUD ---
 
 // Task represents a task in the store.

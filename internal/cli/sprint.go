@@ -42,6 +42,8 @@ var (
 	sprintDockerCPUs           string
 	sprintDockerNetwork        string
 	sprintDockerAllowEndpoints []string
+	sprintResume               bool
+	sprintSessionID            int64
 )
 
 func init() {
@@ -61,9 +63,16 @@ func init() {
 	sprintCmd.Flags().StringVar(&sprintDockerCPUs, "docker-cpus", "2", "container CPU limit")
 	sprintCmd.Flags().StringVar(&sprintDockerNetwork, "docker-network", "none", "container network mode (none, bridge, host, restricted)")
 	sprintCmd.Flags().StringSliceVar(&sprintDockerAllowEndpoints, "allow-endpoint", nil, "additional allowed endpoints for restricted mode (host:port)")
+	sprintCmd.Flags().BoolVar(&sprintResume, "resume", false, "resume the most recent interrupted sprint session")
+	sprintCmd.Flags().Int64Var(&sprintSessionID, "session", 0, "session ID to resume (used with --resume)")
 }
 
 func runSprint(cmd *cobra.Command, args []string) error {
+	// Handle resume mode.
+	if sprintResume {
+		return runResume(cmd)
+	}
+
 	cfg := supervisor.DefaultConfig()
 
 	// Only override defaults when CLI flags are explicitly set.
@@ -154,6 +163,42 @@ func runSprint(cmd *cobra.Command, args []string) error {
 	}
 
 	return sup.Run(ctx)
+}
+
+func runResume(cmd *cobra.Command) error {
+	// Set up signal handling.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	go func() {
+		<-sigCh
+		logger.Info("received shutdown signal, finishing current iteration...")
+		cancel()
+	}()
+
+	// Determine which session to resume.
+	var sessionID int64
+	if cmd.Flags().Changed("session") && sprintSessionID > 0 {
+		sessionID = sprintSessionID
+	} else {
+		// Find the most recent resumable session from the store.
+		cwd, _ := os.Getwd()
+		s, err := supervisor.FindResumableSession(cwd)
+		if err != nil {
+			return fmt.Errorf("finding resumable session: %w", err)
+		}
+		sessionID = s.ID
+		logger.Info("found resumable session", "session_id", sessionID, "status", s.Status, "branch", s.BranchName)
+	}
+
+	sup, err := supervisor.NewForResume(sessionID, logger)
+	if err != nil {
+		return fmt.Errorf("initializing supervisor for resume: %w", err)
+	}
+
+	return sup.Resume(ctx)
 }
 
 func printDryRun(cfg *supervisor.Config) error {

@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/swamp-dev/agentbox/internal/journal"
@@ -90,6 +91,252 @@ func New(cfg *Config, logger *slog.Logger) (*Supervisor, error) {
 	}, nil
 }
 
+// NewForResume creates a Supervisor that resumes an existing session.
+// It loads the session's config from the store, restores task state, and
+// skips the setup phase (worktree already exists on disk).
+func NewForResume(sessionID int64, logger *slog.Logger) (*Supervisor, error) {
+	// We need to find the store. Look in .agentbox relative to cwd first.
+	workDir, _ := os.Getwd()
+	agentboxDir := filepath.Join(workDir, ".agentbox")
+	dbPath := filepath.Join(agentboxDir, "agentbox.db")
+
+	s, err := store.Open(dbPath)
+	if err != nil {
+		return nil, fmt.Errorf("opening store: %w", err)
+	}
+
+	return newForResumeWithStore(s, sessionID, workDir, logger)
+}
+
+// newForResumeWithStore is the internal constructor for resume, allowing
+// tests to inject a store directly.
+func newForResumeWithStore(s *store.Store, sessionID int64, workDir string, logger *slog.Logger) (*Supervisor, error) {
+	sess, err := s.GetSession(sessionID)
+	if err != nil {
+		s.Close()
+		return nil, fmt.Errorf("loading session: %w", err)
+	}
+
+	if sess.Status != "interrupted" && sess.Status != "running" {
+		s.Close()
+		return nil, fmt.Errorf("session %d has status %q, not resumable (must be 'interrupted' or 'running')", sessionID, sess.Status)
+	}
+
+	// Restore config from session.
+	cfg := DefaultConfig()
+	if sess.ConfigJSON != "" {
+		if err := json.Unmarshal([]byte(sess.ConfigJSON), cfg); err != nil {
+			s.Close()
+			return nil, fmt.Errorf("parsing session config: %w", err)
+		}
+	}
+
+	if workDir == "" && cfg.WorkDir != "" {
+		workDir = cfg.WorkDir
+	}
+	if workDir == "" {
+		workDir = "."
+	}
+	cfg.WorkDir = workDir
+
+	// Create workflow and point it at the existing worktree.
+	wf := workflow.NewGitWorkflow(cfg.RepoURL, workDir, logger)
+
+	// Restore task state from store.
+	tdb := taskdb.New()
+	tasks, err := s.ListTasks(sessionID)
+	if err != nil {
+		s.Close()
+		return nil, fmt.Errorf("loading tasks: %w", err)
+	}
+
+	for _, st := range tasks {
+		// Load dependencies.
+		deps, _ := s.GetDependencies(st.ID)
+
+		task := &taskdb.Task{
+			ID:          st.ID,
+			Title:       st.Title,
+			Description: st.Description,
+			Status:      taskdb.TaskStatus(st.Status),
+			Priority:    st.Priority,
+			Complexity:  st.Complexity,
+			ParentID:    st.ParentID,
+			MaxAttempts: st.MaxAttempts,
+			DependsOn:   deps,
+			CreatedAt:   st.CreatedAt,
+			CompletedAt: st.CompletedAt,
+		}
+
+		// Restore attempts.
+		attempts, _ := s.GetAttempts(st.ID)
+		for _, a := range attempts {
+			success := false
+			if a.Success != nil {
+				success = *a.Success
+			}
+			task.Attempts = append(task.Attempts, taskdb.Attempt{
+				Number:    a.Number,
+				AgentName: a.AgentName,
+				Success:   success,
+				ErrorMsg:  a.ErrorMsg,
+				GitCommit: a.GitCommit,
+				StartedAt: a.StartedAt,
+			})
+		}
+
+		if err := tdb.Add(task); err != nil {
+			s.Close()
+			return nil, fmt.Errorf("restoring task %s: %w", st.ID, err)
+		}
+	}
+
+	// Create metrics collector and budget enforcer.
+	collector := metrics.NewCollector(s, sessionID)
+	budget := metrics.NewBudgetEnforcer(cfg.Budget)
+	j := journal.New(s, sessionID)
+
+	// Mark session as running again.
+	if err := s.UpdateSessionStatus(sessionID, "running"); err != nil {
+		s.Close()
+		return nil, fmt.Errorf("updating session status: %w", err)
+	}
+
+	return &Supervisor{
+		cfg:       cfg,
+		store:     s,
+		sessionID: sessionID,
+		workflow:  wf,
+		taskDB:    tdb,
+		collector: collector,
+		budget:    budget,
+		journal:   j,
+		logger:    logger,
+	}, nil
+}
+
+// Resume continues a previously interrupted session. It skips the setup
+// phase and picks up the sprint loop from where it left off.
+func (s *Supervisor) Resume(ctx context.Context) error {
+	defer s.store.Close()
+
+	// Determine where we left off.
+	lastSprint, err := s.store.MaxSprintForSession(s.sessionID)
+	if err != nil {
+		return fmt.Errorf("determining last sprint: %w", err)
+	}
+	lastIter, err := s.store.MaxIterationForSession(s.sessionID)
+	if err != nil {
+		return fmt.Errorf("determining last iteration: %w", err)
+	}
+
+	startSprint := lastSprint + 1
+	startIter := lastIter + 1
+
+	total, completed, pending, failed, _ := s.taskDB.Stats()
+	s.logger.Info("resuming session",
+		"session_id", s.sessionID,
+		"start_sprint", startSprint,
+		"start_iteration", startIter,
+		"tasks_total", total,
+		"tasks_completed", completed,
+		"tasks_pending", pending,
+		"tasks_failed", failed,
+	)
+
+	// Resolve the worktree path. For resume, the worktree should already exist.
+	// Try to locate it from the branch name.
+	if s.cfg.BranchName != "" {
+		repoDir := s.workflow.RepoDir()
+		worktreeName := strings.ReplaceAll(s.cfg.BranchName, "/", "-")
+		candidatePath := filepath.Join(filepath.Dir(repoDir), worktreeName)
+		if fi, err := os.Stat(candidatePath); err == nil && fi.IsDir() {
+			s.workflow.SetWorktreePath(candidatePath, s.cfg.BranchName)
+		}
+	}
+
+	if s.cfg.JournalEnabled {
+		_ = s.journal.Add(&store.JournalEntry{
+			Kind:       string(journal.KindReflection),
+			Sprint:     startSprint,
+			Iteration:  startIter,
+			Summary:    "Session resumed",
+			Reflection: fmt.Sprintf("Resuming interrupted session. Tasks: %d total, %d completed, %d pending, %d failed.", total, completed, pending, failed),
+			Confidence: 3,
+			Momentum:   3,
+		})
+	}
+
+	// Create agent runner (unless dry-run).
+	var agentRunner AgentRunner
+	var loop *ralph.Loop
+	if !s.cfg.DryRun {
+		worktreePath := s.workflow.WorktreePath()
+		if worktreePath != "" {
+			ralphCfg := s.cfg.ToRalphConfig()
+			var err error
+			loop, err = ralph.NewLoop(ralphCfg, worktreePath, s.logger)
+			if err != nil {
+				_ = s.store.UpdateSessionStatus(s.sessionID, "failed")
+				return fmt.Errorf("creating ralph loop: %w", err)
+			}
+			defer func() {
+				if closeErr := loop.Close(); closeErr != nil {
+					s.logger.Warn("failed to close ralph loop", "error", closeErr)
+				}
+			}()
+			agentRunner = NewRalphAgentRunner(loop)
+		}
+	}
+
+	// Sprint loop — picks up where we left off.
+	iteration := startIter
+	for sprint := startSprint; sprint <= s.cfg.MaxSprints; sprint++ {
+		select {
+		case <-ctx.Done():
+			_ = s.store.UpdateSessionStatus(s.sessionID, "interrupted")
+			return ctx.Err()
+		default:
+		}
+
+		if s.taskDB.IsComplete() {
+			s.logger.Info("all tasks completed")
+			break
+		}
+
+		runner := NewSprintRunner(
+			s.cfg, s.store, s.sessionID,
+			s.workflow, s.taskDB, s.collector, s.budget, s.journal, agentRunner, s.logger,
+		)
+
+		result, err := runner.RunSprint(ctx, sprint, iteration)
+		if err != nil {
+			s.logger.Error("sprint error", "sprint", sprint, "error", err)
+			if result != nil && result.BudgetExceeded {
+				s.logger.Warn("stopping: budget exceeded")
+				break
+			}
+			continue
+		}
+
+		iteration = runner.CurrentIteration()
+
+		if result.BudgetExceeded {
+			s.logger.Warn("stopping: budget exceeded")
+			break
+		}
+		if result.AbortedEarly {
+			s.logger.Warn("sprint aborted", "reason", result.AbortReason)
+		}
+
+		if s.cfg.ReviewEnabled && s.cfg.ReviewAfter == "sprint" {
+			s.runReviewGate(ctx)
+		}
+	}
+
+	return s.finalize(ctx)
+}
+
 // Run executes the full supervisor lifecycle.
 func (s *Supervisor) Run(ctx context.Context) error {
 	defer s.store.Close()
@@ -103,7 +350,11 @@ func (s *Supervisor) Run(ctx context.Context) error {
 
 	// Phase 1: Setup.
 	if err := s.setup(ctx); err != nil {
-		_ = s.store.UpdateSessionStatus(s.sessionID, "failed")
+		if ctx.Err() != nil {
+			_ = s.store.UpdateSessionStatus(s.sessionID, "interrupted")
+		} else {
+			_ = s.store.UpdateSessionStatus(s.sessionID, "failed")
+		}
 		return fmt.Errorf("setup: %w", err)
 	}
 
@@ -136,7 +387,7 @@ func (s *Supervisor) Run(ctx context.Context) error {
 	for sprint := 1; sprint <= s.cfg.MaxSprints; sprint++ {
 		select {
 		case <-ctx.Done():
-			_ = s.store.UpdateSessionStatus(s.sessionID, "cancelled")
+			_ = s.store.UpdateSessionStatus(s.sessionID, "interrupted")
 			return ctx.Err()
 		default:
 		}
@@ -481,6 +732,26 @@ func (s *Supervisor) generatePRBody() (string, error) {
 	body += "---\n\n🤖 Generated by [agentbox](https://github.com/swamp-dev/agentbox)\n"
 
 	return body, nil
+}
+
+// FindResumableSession opens the store at the given workDir and returns
+// the latest resumable session. The caller is responsible for the returned
+// session's data only; the store is closed before returning.
+func FindResumableSession(workDir string) (*store.Session, error) {
+	dbPath := filepath.Join(workDir, ".agentbox", "agentbox.db")
+	s, err := store.Open(dbPath)
+	if err != nil {
+		return nil, fmt.Errorf("opening store: %w", err)
+	}
+	defer s.Close()
+
+	sess, err := s.LatestResumableSession()
+	if err != nil {
+		return nil, err
+	}
+	// Return a copy so the store can be safely closed.
+	copy := *sess
+	return &copy, nil
 }
 
 // SessionID returns the current session ID.
