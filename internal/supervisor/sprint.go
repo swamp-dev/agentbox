@@ -65,12 +65,9 @@ func NewSprintRunner(
 	}
 	adaptive := NewAdaptiveController(s, sessionID, logger)
 
-	// Wire fallback agent switching if configured.
+	// Configure fallback agent if set.
 	if cfg.FallbackAgent != "" {
-		adaptive.SetFallbackAgent(cfg.FallbackAgent, func(newAgent string) {
-			cfg.Agent = newAgent
-			logger.Info("agent switched via adaptive controller", "new_agent", newAgent)
-		})
+		adaptive.SetFallbackAgent(cfg.FallbackAgent)
 	}
 	if j != nil {
 		adaptive.SetJournal(j)
@@ -347,6 +344,12 @@ func (sr *SprintRunner) writeSprintRetroEntry(report *retro.SprintReport) {
 // CurrentIteration returns the current iteration count.
 func (sr *SprintRunner) CurrentIteration() int {
 	return sr.iteration
+}
+
+// SwitchRecommended returns whether the adaptive controller recommended an
+// agent switch during the sprint, and the target agent name.
+func (sr *SprintRunner) SwitchRecommended() (bool, string) {
+	return sr.adaptive.SwitchRecommended()
 }
 
 func timePtr(t time.Time) *time.Time {

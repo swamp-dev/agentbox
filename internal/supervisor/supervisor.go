@@ -29,7 +29,6 @@ type Supervisor struct {
 	budget    *metrics.BudgetEnforcer
 	journal   *journal.Journal
 	reviewer  *review.Reviewer
-	adaptive  *AdaptiveController
 	logger    *slog.Logger
 }
 
@@ -85,7 +84,6 @@ func New(cfg *Config, logger *slog.Logger) (*Supervisor, error) {
 		collector: collector,
 		budget:    budget,
 		journal:   j,
-		adaptive:  NewAdaptiveController(s, sessionID, logger),
 		logger:    logger,
 	}, nil
 }
@@ -109,6 +107,7 @@ func (s *Supervisor) Run(ctx context.Context) error {
 
 	// Create agent runner (unless dry-run).
 	var agentRunner AgentRunner
+	var loop *ralph.Loop
 	if !s.cfg.DryRun {
 		ralphCfg := s.cfg.ToRalphConfig()
 		worktreePath := s.workflow.WorktreePath()
@@ -116,7 +115,8 @@ func (s *Supervisor) Run(ctx context.Context) error {
 			_ = s.store.UpdateSessionStatus(s.sessionID, "failed")
 			return fmt.Errorf("creating agent runner: worktree path not set")
 		}
-		loop, err := ralph.NewLoop(ralphCfg, worktreePath, s.logger)
+		var err error
+		loop, err = ralph.NewLoop(ralphCfg, worktreePath, s.logger)
 		if err != nil {
 			_ = s.store.UpdateSessionStatus(s.sessionID, "failed")
 			return fmt.Errorf("creating ralph loop (image=%s, prd=%s): %w", ralphCfg.Docker.Image, ralphCfg.Ralph.PRDFile, err)
@@ -160,6 +160,26 @@ func (s *Supervisor) Run(ctx context.Context) error {
 		}
 
 		iteration = runner.CurrentIteration()
+
+		// Check if adaptive controller recommended an agent switch.
+		if recommended, newAgent := runner.SwitchRecommended(); recommended && !s.cfg.DryRun {
+			s.logger.Info("rebuilding agent runner for next sprint", "new_agent", newAgent)
+			s.cfg.Agent = newAgent
+
+			// Close the old loop and build a new one with the updated agent.
+			if closeErr := loop.Close(); closeErr != nil {
+				s.logger.Warn("failed to close old ralph loop", "error", closeErr)
+			}
+			ralphCfg := s.cfg.ToRalphConfig()
+			newLoop, err := ralph.NewLoop(ralphCfg, s.workflow.WorktreePath(), s.logger)
+			if err != nil {
+				s.logger.Error("failed to create ralph loop with new agent", "agent", newAgent, "error", err)
+				// Continue with old runner rather than failing the session.
+			} else {
+				loop = newLoop
+				agentRunner = NewRalphAgentRunner(loop)
+			}
+		}
 
 		if result.BudgetExceeded {
 			s.logger.Warn("stopping: budget exceeded")

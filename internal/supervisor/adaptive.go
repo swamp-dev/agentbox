@@ -19,9 +19,10 @@ type AdaptiveController struct {
 	logger    *slog.Logger
 
 	// Fallback agent switching.
-	fallbackAgent string
-	onSwitchAgent func(newAgent string)
-	journal       *journal.Journal
+	fallbackAgent     string
+	switchRecommended bool
+	switched          bool // idempotency guard — only switch once per session
+	journal           *journal.Journal
 }
 
 // NewAdaptiveController creates a new adaptive controller.
@@ -29,16 +30,24 @@ func NewAdaptiveController(s *store.Store, sessionID int64, logger *slog.Logger)
 	return &AdaptiveController{store: s, sessionID: sessionID, logger: logger}
 }
 
-// SetFallbackAgent configures the fallback agent name and a callback to invoke
-// when the adaptive controller decides to switch agents.
-func (ac *AdaptiveController) SetFallbackAgent(name string, onSwitch func(newAgent string)) {
+// SetFallbackAgent configures the fallback agent name.
+func (ac *AdaptiveController) SetFallbackAgent(name string) {
 	ac.fallbackAgent = name
-	ac.onSwitchAgent = onSwitch
 }
 
 // SetJournal configures the journal for writing agent-switch entries.
 func (ac *AdaptiveController) SetJournal(j *journal.Journal) {
 	ac.journal = j
+}
+
+// SwitchRecommended returns whether an agent switch was recommended and the
+// target agent name. The recommendation is cleared after reading.
+func (ac *AdaptiveController) SwitchRecommended() (bool, string) {
+	if ac.switchRecommended {
+		ac.switchRecommended = false
+		return true, ac.fallbackAgent
+	}
+	return false, ""
 }
 
 // Apply processes recommendations and returns actions taken.
@@ -78,18 +87,24 @@ func (ac *AdaptiveController) Apply(recs []retro.Recommendation) []string {
 			}
 
 		case retro.RecSwitchAgent:
-			if ac.fallbackAgent != "" && ac.onSwitchAgent != nil {
-				ac.onSwitchAgent(ac.fallbackAgent)
-				actions = append(actions, fmt.Sprintf("Switched agent to %s: %s", ac.fallbackAgent, rec.Description))
-				ac.logger.Info("switched to fallback agent", "agent", ac.fallbackAgent, "reason", rec.Description)
+			if ac.fallbackAgent != "" && !ac.switched {
+				ac.switchRecommended = true
+				ac.switched = true
+				actions = append(actions, fmt.Sprintf("Recommended agent switch to %s: %s", ac.fallbackAgent, rec.Description))
+				ac.logger.Info("agent switch recommended", "agent", ac.fallbackAgent, "reason", rec.Description)
 
 				if ac.journal != nil {
-					_ = ac.journal.Add(&store.JournalEntry{
+					if err := ac.journal.Add(&store.JournalEntry{
 						Kind:       string(journal.KindAgentSwitch),
-						Summary:    fmt.Sprintf("Switched agent to %s", ac.fallbackAgent),
-						Reflection: fmt.Sprintf("Adaptive controller switched to fallback agent %q. Reason: %s", ac.fallbackAgent, rec.Description),
-					})
+						Summary:    fmt.Sprintf("Agent switch recommended to %s", ac.fallbackAgent),
+						Reflection: fmt.Sprintf("Adaptive controller recommends switching to fallback agent %q. Reason: %s", ac.fallbackAgent, rec.Description),
+					}); err != nil {
+						ac.logger.Warn("failed to write agent switch journal entry", "error", err)
+					}
 				}
+			} else if ac.switched {
+				actions = append(actions, fmt.Sprintf("Agent switch already applied, skipping: %s", rec.Description))
+				ac.logger.Info("agent switch already applied, ignoring duplicate recommendation", "reason", rec.Description)
 			} else {
 				actions = append(actions, fmt.Sprintf("Recommendation: switch agent — %s", rec.Description))
 				ac.logger.Warn("agent switch recommended but no fallback configured", "reason", rec.Description)
