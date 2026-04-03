@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -1218,6 +1219,247 @@ func TestApply_SplitTask(t *testing.T) {
 	}
 	if !strings.Contains(actions[0], "split task") {
 		t.Errorf("expected split task action, got %q", actions[0])
+	}
+}
+
+// ScriptedAgentRunner implements AgentRunner with predefined per-task results.
+// It tracks call order for assertions.
+type ScriptedAgentRunner struct {
+	results map[string]*ralph.IterationResult
+	mu      sync.Mutex
+	calls   []string // task IDs in order of execution
+}
+
+func NewScriptedAgentRunner(results map[string]*ralph.IterationResult) *ScriptedAgentRunner {
+	return &ScriptedAgentRunner{results: results}
+}
+
+// Calls returns a copy of the recorded task IDs under lock.
+func (s *ScriptedAgentRunner) Calls() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]string, len(s.calls))
+	copy(out, s.calls)
+	return out
+}
+
+func (s *ScriptedAgentRunner) RunTask(_ context.Context, task *ralph.Task, _ string) *ralph.IterationResult {
+	s.mu.Lock()
+	s.calls = append(s.calls, task.ID)
+	s.mu.Unlock()
+	if r, ok := s.results[task.ID]; ok {
+		return r
+	}
+	return &ralph.IterationResult{
+		TaskID:  task.ID,
+		Success: false,
+		Error:   "no scripted result for task " + task.ID,
+	}
+}
+
+func TestFullSprintLifecycle(t *testing.T) {
+	// This end-to-end test exercises the full supervisor pipeline:
+	// setup → sprint execution → retro → adaptive → finalize.
+	//
+	// We use a real git repo, real SQLite (in-memory), and a ScriptedAgentRunner
+	// that returns success for some tasks and failure for others.
+
+	// --- Arrange ---
+
+	// PRD with 3 tasks: t-1 succeeds, t-2 fails, t-3 succeeds.
+	// t-2 failing exercises the retro/adaptive path.
+	prdContent := `{
+		"name": "Integration Test",
+		"tasks": [
+			{"id": "t-1", "title": "Setup auth", "description": "Add authentication", "status": "pending", "priority": 1},
+			{"id": "t-2", "title": "Add caching", "description": "Implement caching layer", "status": "pending", "priority": 2},
+			{"id": "t-3", "title": "Add logging", "description": "Structured logging", "status": "pending", "priority": 3}
+		]
+	}`
+	repoDir := initGitRepo(t, map[string]string{"prd.json": prdContent})
+
+	cfg := DefaultConfig()
+	cfg.WorkDir = repoDir
+	cfg.BranchName = "feat/lifecycle-test"
+	cfg.JournalEnabled = true
+	cfg.ReviewEnabled = false // No reviewer configured; skip review gate.
+	cfg.AutoCommit = false    // Don't attempt git commits from sprint runner.
+	cfg.MaxSprints = 2
+	cfg.SprintSize = 3
+	cfg.MaxConsecutiveFails = 10 // High to avoid early abort.
+
+	sup, err := New(cfg, testLogger())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	// Note: Run() closes the store, but we call phases manually so close explicitly.
+	defer sup.Store().Close()
+
+	ctx := context.Background()
+
+	// Phase 1: Setup (clone/open repo, create worktree, import PRD).
+	if err := sup.setup(ctx); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+
+	// Verify tasks were imported.
+	total, _, _, _, _ := sup.taskDB.Stats()
+	if total != 3 {
+		t.Fatalf("expected 3 tasks imported, got %d", total)
+	}
+
+	// Create scripted runner: t-1 succeeds, t-2 fails, t-3 succeeds.
+	scripted := NewScriptedAgentRunner(map[string]*ralph.IterationResult{
+		"t-1": {TaskID: "t-1", Success: true, Output: "auth implemented"},
+		"t-2": {TaskID: "t-2", Success: false, Error: "cache dependency missing"},
+		"t-3": {TaskID: "t-3", Success: true, Output: "logging added"},
+	})
+
+	// Phase 2: Sprint loop.
+	// NOTE: This loop intentionally mirrors the structure of supervisor.go:Run()
+	// (setup → sprint loop → finalize). If Run()'s loop condition or phase
+	// ordering changes, this test must be kept in sync.
+	iteration := 1
+	for sprint := 1; sprint <= cfg.MaxSprints; sprint++ {
+		if sup.taskDB.IsComplete() {
+			break
+		}
+
+		runner := NewSprintRunner(
+			cfg, sup.store, sup.sessionID,
+			sup.workflow, sup.taskDB, sup.collector, sup.budget, sup.journal, scripted, sup.logger,
+		)
+
+		result, err := runner.RunSprint(ctx, sprint, iteration)
+		if err != nil {
+			t.Fatalf("RunSprint(%d): %v", sprint, err)
+		}
+		iteration = runner.CurrentIteration()
+
+		if result.BudgetExceeded {
+			t.Fatal("unexpected budget exceeded")
+		}
+		if result.AbortedEarly {
+			t.Fatalf("unexpected early abort in sprint %d: %s", sprint, result.AbortReason)
+		}
+	}
+
+	// Phase 4: Finalize.
+	if err := sup.finalize(ctx); err != nil {
+		t.Fatalf("finalize: %v", err)
+	}
+
+	// --- Assert ---
+
+	// 1. Session was created and completed.
+	sess, err := sup.Store().GetSession(sup.SessionID())
+	if err != nil {
+		t.Fatalf("GetSession: %v", err)
+	}
+	if sess.Status != "completed" {
+		t.Errorf("expected session status 'completed', got %q", sess.Status)
+	}
+
+	// 2. Tasks were executed (verify each expected task was called).
+	wantCalled := map[string]bool{"t-1": true, "t-2": true, "t-3": true}
+	gotCalled := map[string]bool{}
+	for _, id := range scripted.Calls() {
+		gotCalled[id] = true
+	}
+	for id := range wantCalled {
+		if !gotCalled[id] {
+			t.Errorf("expected task %s to be called, but it wasn't", id)
+		}
+	}
+
+	// 3. Verify task statuses in store.
+	tasks, err := sup.Store().ListTasks(sup.SessionID())
+	if err != nil {
+		t.Fatalf("ListTasks: %v", err)
+	}
+
+	statusByID := make(map[string]string)
+	for _, task := range tasks {
+		statusByID[task.ID] = task.Status
+	}
+
+	if statusByID["t-1"] != "completed" {
+		t.Errorf("expected t-1 completed, got %q", statusByID["t-1"])
+	}
+	if statusByID["t-3"] != "completed" {
+		t.Errorf("expected t-3 completed, got %q", statusByID["t-3"])
+	}
+	// t-2 should not be completed (it failed).
+	if statusByID["t-2"] == "completed" {
+		t.Error("expected t-2 NOT completed, but it was")
+	}
+
+	// 4. Attempts were recorded for each task.
+	for _, taskID := range []string{"t-1", "t-2", "t-3"} {
+		attempts, err := sup.Store().GetAttempts(taskID)
+		if err != nil {
+			t.Fatalf("GetAttempts(%s): %v", taskID, err)
+		}
+		if len(attempts) == 0 {
+			t.Errorf("expected at least 1 attempt for %s", taskID)
+		}
+	}
+
+	// 5. Journal entries exist for task starts, completions, failures.
+	allEntries, err := sup.Store().JournalEntries(sup.SessionID(), nil)
+	if err != nil {
+		t.Fatalf("JournalEntries: %v", err)
+	}
+	if len(allEntries) == 0 {
+		t.Fatal("expected journal entries, got none")
+	}
+
+	kindCounts := make(map[string]int)
+	for _, e := range allEntries {
+		kindCounts[e.Kind]++
+	}
+
+	// Should have task_start entries.
+	if kindCounts[string(journal.KindTaskStart)] == 0 {
+		t.Error("expected task_start journal entries")
+	}
+	// Should have task_complete entries (t-1 and t-3 succeeded).
+	if kindCounts[string(journal.KindTaskComplete)] == 0 {
+		t.Error("expected task_complete journal entries")
+	}
+	// Should have task_failed entries (t-2 failed).
+	if kindCounts[string(journal.KindTaskFailed)] == 0 {
+		t.Error("expected task_failed journal entries")
+	}
+	// Should have sprint_retro entries.
+	if kindCounts[string(journal.KindSprintRetro)] == 0 {
+		t.Error("expected sprint_retro journal entries")
+	}
+	// Should have final_wrap_up entry (from finalize).
+	if kindCounts[string(journal.KindFinalWrapUp)] == 0 {
+		t.Error("expected final_wrap_up journal entry")
+	}
+
+	// 6. Sprint reports were saved.
+	reports, err := sup.Store().SprintReports(sup.SessionID())
+	if err != nil {
+		t.Fatalf("SprintReports: %v", err)
+	}
+	if len(reports) == 0 {
+		t.Error("expected at least one sprint report saved")
+	}
+
+	// 7. Verify at least one sprint report has task data.
+	// The retro analyzer uses iteration ranges to count attempts, so not all
+	// sprint reports may show tasks (due to attempt number vs iteration mismatch).
+	hasTaskData := false
+	for _, r := range reports {
+		if r.TasksAttempted > 0 {
+			hasTaskData = true
+		}
+	}
+	if !hasTaskData {
+		t.Error("expected at least one sprint report with tasks attempted > 0")
 	}
 }
 
