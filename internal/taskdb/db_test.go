@@ -326,6 +326,90 @@ func TestSaveAndLoad(t *testing.T) {
 	}
 }
 
+func TestAdjustPriority(t *testing.T) {
+	tests := []struct {
+		name         string
+		initial      int
+		delta        int
+		wantPriority int
+		wantErr      bool
+	}{
+		{"positive delta", 5, 10, 15, false},
+		{"negative delta", 15, -5, 10, false},
+		{"caps at max", 95, 10, MaxPriority, false},
+		{"caps at zero", 5, -10, 0, false},
+		{"exact max", 90, 10, MaxPriority, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			db := New()
+			if err := db.Add(&Task{ID: "t-1", Title: "Test", Status: StatusPending, Priority: tt.initial}); err != nil {
+				t.Fatalf("setup Add: %v", err)
+			}
+
+			got, err := db.AdjustPriority("t-1", tt.delta)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("AdjustPriority() error = %v, wantErr %v", err, tt.wantErr)
+			}
+			if got != tt.wantPriority {
+				t.Errorf("AdjustPriority() = %d, want %d", got, tt.wantPriority)
+			}
+
+			task, _ := db.Get("t-1")
+			if task.Priority != tt.wantPriority {
+				t.Errorf("task.Priority = %d, want %d", task.Priority, tt.wantPriority)
+			}
+		})
+	}
+}
+
+func TestAdjustPriority_NotFound(t *testing.T) {
+	db := New()
+	_, err := db.AdjustPriority("nonexistent", 5)
+	if err == nil {
+		t.Error("expected error for nonexistent task")
+	}
+}
+
+func TestCompletedTasks(t *testing.T) {
+	db := New()
+	for _, task := range []*Task{
+		{ID: "t-1", Title: "Done 1", Status: StatusCompleted},
+		{ID: "t-2", Title: "Pending", Status: StatusPending},
+		{ID: "t-3", Title: "Done 2", Status: StatusCompleted},
+		{ID: "t-4", Title: "Failed", Status: StatusFailed},
+	} {
+		if err := db.Add(task); err != nil {
+			t.Fatalf("setup Add(%s): %v", task.ID, err)
+		}
+	}
+
+	completed := db.CompletedTasks()
+	if len(completed) != 2 {
+		t.Errorf("expected 2 completed tasks, got %d", len(completed))
+	}
+}
+
+func TestTasksByStatus(t *testing.T) {
+	db := New()
+	for _, task := range []*Task{
+		{ID: "t-1", Title: "Done", Status: StatusCompleted},
+		{ID: "t-2", Title: "Pending", Status: StatusPending},
+		{ID: "t-3", Title: "Failed", Status: StatusFailed},
+		{ID: "t-4", Title: "Deferred", Status: StatusDeferred},
+	} {
+		if err := db.Add(task); err != nil {
+			t.Fatalf("setup Add(%s): %v", task.ID, err)
+		}
+	}
+
+	result := db.TasksByStatus(StatusFailed, StatusDeferred)
+	if len(result) != 2 {
+		t.Errorf("expected 2 tasks, got %d", len(result))
+	}
+}
+
 func TestTaskFailureHistory(t *testing.T) {
 	task := &Task{
 		ID: "t-1", Title: "Test", Status: StatusPending,

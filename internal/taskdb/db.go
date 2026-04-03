@@ -5,14 +5,18 @@ import (
 	"fmt"
 	"os"
 	"sort"
+	"strconv"
 	"sync"
 	"time"
 )
 
+// MaxPriority is the upper bound for task priority values.
+const MaxPriority = 100
+
 // DB is an in-memory task database with DAG dependency tracking.
-// All mutating operations are protected by a mutex for concurrent safety.
+// All operations are protected by a read-write mutex for concurrent safety.
 type DB struct {
-	mu    sync.Mutex
+	mu    sync.RWMutex
 	Tasks map[string]*Task `json:"tasks"`
 }
 
@@ -48,6 +52,8 @@ func (db *DB) addLocked(task *Task) error {
 
 // Get returns a task by ID.
 func (db *DB) Get(id string) (*Task, bool) {
+	db.mu.RLock()
+	defer db.mu.RUnlock()
 	t, ok := db.Tasks[id]
 	return t, ok
 }
@@ -215,8 +221,32 @@ func (db *DB) UpdatePriority(taskID string, priority int) error {
 	if !ok {
 		return fmt.Errorf("task %s not found", taskID)
 	}
+	if priority > MaxPriority {
+		priority = MaxPriority
+	}
 	task.Priority = priority
 	return nil
+}
+
+// AdjustPriority atomically adds delta to a task's priority, capping at MaxPriority.
+// It returns the new priority value.
+func (db *DB) AdjustPriority(taskID string, delta int) (int, error) {
+	db.mu.Lock()
+	defer db.mu.Unlock()
+
+	task, ok := db.Tasks[taskID]
+	if !ok {
+		return 0, fmt.Errorf("task %s not found", taskID)
+	}
+	newPriority := task.Priority + delta
+	if newPriority > MaxPriority {
+		newPriority = MaxPriority
+	}
+	if newPriority < 0 {
+		newPriority = 0
+	}
+	task.Priority = newPriority
+	return newPriority, nil
 }
 
 // SplitTask decomposes a task into subtasks, marking the parent as deferred.
@@ -232,6 +262,10 @@ func (db *DB) SplitTask(parentID string, subtasks []*Task) error {
 	for _, sub := range subtasks {
 		sub.ParentID = parentID
 		sub.DependsOn = append(sub.DependsOn, parent.DependsOn...)
+		// If subtask ID already exists (idempotent re-split), generate a unique ID.
+		if _, exists := db.Tasks[sub.ID]; exists {
+			sub.ID = sub.ID + "-" + strconv.Itoa(len(db.Tasks))
+		}
 		if err := db.addLocked(sub); err != nil {
 			return fmt.Errorf("adding subtask %s: %w", sub.ID, err)
 		}
@@ -337,6 +371,39 @@ func (db *DB) Stats() (total, completed, pending, failed, deferred int) {
 		}
 	}
 	return
+}
+
+// CompletedTasks returns a copy of all completed tasks under lock.
+func (db *DB) CompletedTasks() []Task {
+	db.mu.RLock()
+	defer db.mu.RUnlock()
+
+	var result []Task
+	for _, t := range db.Tasks {
+		if t.Status == StatusCompleted {
+			result = append(result, *t)
+		}
+	}
+	return result
+}
+
+// TasksByStatus returns a copy of all tasks matching the given status under lock.
+func (db *DB) TasksByStatus(statuses ...TaskStatus) []Task {
+	db.mu.RLock()
+	defer db.mu.RUnlock()
+
+	statusSet := make(map[TaskStatus]bool, len(statuses))
+	for _, s := range statuses {
+		statusSet[s] = true
+	}
+
+	var result []Task
+	for _, t := range db.Tasks {
+		if statusSet[t.Status] {
+			result = append(result, *t)
+		}
+	}
+	return result
 }
 
 // Save persists the task DB to a JSON file.

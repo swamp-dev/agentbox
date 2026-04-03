@@ -124,17 +124,12 @@ func (ac *AdaptiveController) Apply(recs []retro.Recommendation) []string {
 
 		case retro.RecReorderTasks:
 			if ac.taskDB != nil && rec.TaskID != "" {
-				// Lower the failing task's priority so other tasks run first.
+				// Atomically adjust priority so other tasks run first.
 				// Higher priority number = lower priority in NextTask() sorting.
-				task, ok := ac.taskDB.Get(rec.TaskID)
-				if ok {
-					newPriority := task.Priority + 10
-					if err := ac.taskDB.UpdatePriority(rec.TaskID, newPriority); err == nil {
-						actions = append(actions, fmt.Sprintf("Deprioritized task %s (priority %d → %d): %s", rec.TaskID, task.Priority, newPriority, rec.Description))
-						ac.logger.Info("deprioritized task", "task_id", rec.TaskID, "old_priority", task.Priority, "new_priority", newPriority)
-					} else {
-						actions = append(actions, fmt.Sprintf("Recommendation: reorder tasks — %s", rec.Description))
-					}
+				newPriority, err := ac.taskDB.AdjustPriority(rec.TaskID, 10)
+				if err == nil {
+					actions = append(actions, fmt.Sprintf("Deprioritized task %s (priority → %d): %s", rec.TaskID, newPriority, rec.Description))
+					ac.logger.Info("deprioritized task", "task_id", rec.TaskID, "new_priority", newPriority)
 				} else {
 					actions = append(actions, fmt.Sprintf("Recommendation: reorder tasks — %s", rec.Description))
 				}
