@@ -85,7 +85,10 @@ func runRun(cmd *cobra.Command, args []string) error {
 
 	// Merge agent-default endpoints with any user-specified endpoints.
 	if cfg.Docker.Network == "restricted" {
-		ag, _ := agent.New(runAgent)
+		ag, agErr := agent.New(runAgent)
+		if agErr != nil {
+			logger.Warn("failed to create agent for endpoint config", "error", agErr)
+		}
 		if ag != nil {
 			cfg.Docker.AllowedEndpoints = append(ag.AllowedEndpoints(), runAllowEndpoints...)
 		} else if len(runAllowEndpoints) > 0 {

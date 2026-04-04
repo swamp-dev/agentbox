@@ -211,6 +211,40 @@ func TestSplitTask(t *testing.T) {
 	}
 }
 
+func TestSplitTask_EmptySubtasks(t *testing.T) {
+	db := New()
+	if err := db.Add(&Task{ID: "big", Title: "Big task", Status: StatusPending}); err != nil {
+		t.Fatalf("setup Add: %v", err)
+	}
+
+	err := db.SplitTask("big", []*Task{})
+	if err == nil {
+		t.Error("expected error for empty subtasks")
+	}
+}
+
+func TestGetConcurrent(t *testing.T) {
+	db := New()
+	if err := db.Add(&Task{ID: "t-1", Title: "Test", Status: StatusPending}); err != nil {
+		t.Fatalf("setup Add: %v", err)
+	}
+
+	done := make(chan struct{})
+	for i := 0; i < 10; i++ {
+		go func() {
+			defer func() { done <- struct{}{} }()
+			for j := 0; j < 100; j++ {
+				if _, ok := db.Get("t-1"); !ok {
+					t.Error("expected task to exist")
+				}
+			}
+		}()
+	}
+	for i := 0; i < 10; i++ {
+		<-done
+	}
+}
+
 func TestMergeTasks(t *testing.T) {
 	db := New()
 	for _, task := range []*Task{
