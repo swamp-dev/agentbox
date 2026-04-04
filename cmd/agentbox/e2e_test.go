@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/swamp-dev/agentbox/internal/ralph"
 )
 
 // setupGitRepo creates a temp directory with an initialized git repo and
@@ -18,7 +20,7 @@ func setupGitRepo(t *testing.T) string {
 	dir := t.TempDir()
 
 	for _, args := range [][]string{
-		{"init"},
+		{"init", "--initial-branch", "main"},
 		{"config", "user.email", "test@test.com"},
 		{"config", "user.name", "Test"},
 	} {
@@ -48,14 +50,9 @@ func setupGitRepo(t *testing.T) string {
 	return dir
 }
 
-// writePRD writes a PRD JSON file with the given tasks to the specified directory.
-func writePRD(t *testing.T, dir string, name string, tasks []map[string]interface{}) string {
+// writePRD writes a PRD JSON file to the specified directory.
+func writePRD(t *testing.T, dir string, prd ralph.PRD) string {
 	t.Helper()
-	prd := map[string]interface{}{
-		"name":        name,
-		"description": "Test PRD",
-		"tasks":       tasks,
-	}
 	data, err := json.MarshalIndent(prd, "", "  ")
 	if err != nil {
 		t.Fatal(err)
@@ -67,32 +64,6 @@ func writePRD(t *testing.T, dir string, name string, tasks []map[string]interfac
 	return path
 }
 
-// writeConfig writes a minimal agentbox.yaml to the directory.
-func writeConfig(t *testing.T, dir string) {
-	t.Helper()
-	cfg := `version: "1.0"
-project:
-  name: test-project
-  path: "."
-agent:
-  name: claude
-docker:
-  image: full
-  resources:
-    memory: "4g"
-    cpus: "2"
-  network: none
-ralph:
-  max_iterations: 10
-  prd_file: prd.json
-  auto_commit: true
-  stop_signal: "<promise>COMPLETE</promise>"
-`
-	if err := os.WriteFile(filepath.Join(dir, "agentbox.yaml"), []byte(cfg), 0644); err != nil {
-		t.Fatal(err)
-	}
-}
-
 func TestSprintDryRunE2E(t *testing.T) {
 	if binaryPath == "" {
 		t.Skip("binary not built (TestMain did not run)")
@@ -100,16 +71,18 @@ func TestSprintDryRunE2E(t *testing.T) {
 
 	tests := []struct {
 		name           string
-		tasks          []map[string]interface{}
-		prdName        string
+		prd            ralph.PRD
 		wantSubstrings []string
 	}{
 		{
-			name:    "two independent tasks",
-			prdName: "E2E Test Project",
-			tasks: []map[string]interface{}{
-				{"id": "task-1", "title": "Set up CI pipeline", "description": "Configure GitHub Actions", "status": "pending", "priority": 1},
-				{"id": "task-2", "title": "Add unit tests", "description": "Write tests for core module", "status": "pending", "priority": 2},
+			name: "two independent tasks",
+			prd: ralph.PRD{
+				Name:        "E2E Test Project",
+				Description: "Test PRD",
+				Tasks: []ralph.Task{
+					{ID: "task-1", Title: "Set up CI pipeline", Description: "Configure GitHub Actions", Status: "pending", Priority: 1},
+					{ID: "task-2", Title: "Add unit tests", Description: "Write tests for core module", Status: "pending", Priority: 2},
+				},
 			},
 			wantSubstrings: []string{
 				"Dry Run",
@@ -123,12 +96,15 @@ func TestSprintDryRunE2E(t *testing.T) {
 			},
 		},
 		{
-			name:    "three tasks with dependencies",
-			prdName: "Dependency Test",
-			tasks: []map[string]interface{}{
-				{"id": "t1", "title": "Foundation", "description": "Base layer", "status": "pending", "priority": 1},
-				{"id": "t2", "title": "Feature A", "description": "Depends on foundation", "status": "pending", "priority": 2, "depends_on": []string{"t1"}},
-				{"id": "t3", "title": "Feature B", "description": "Depends on A", "status": "pending", "priority": 3, "depends_on": []string{"t2"}},
+			name: "three tasks with dependencies",
+			prd: ralph.PRD{
+				Name:        "Dependency Test",
+				Description: "Test PRD",
+				Tasks: []ralph.Task{
+					{ID: "t1", Title: "Foundation", Description: "Base layer", Status: "pending", Priority: 1},
+					{ID: "t2", Title: "Feature A", Description: "Depends on foundation", Status: "pending", Priority: 2, DependsOn: []string{"t1"}},
+					{ID: "t3", Title: "Feature B", Description: "Depends on A", Status: "pending", Priority: 3, DependsOn: []string{"t2"}},
+				},
 			},
 			wantSubstrings: []string{
 				"Dependency Test",
@@ -145,8 +121,7 @@ func TestSprintDryRunE2E(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			dir := setupGitRepo(t)
-			writeConfig(t, dir)
-			writePRD(t, dir, tt.prdName, tt.tasks)
+			writePRD(t, dir, tt.prd)
 
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
@@ -175,7 +150,6 @@ func TestSprintDryRunMissingPRD(t *testing.T) {
 	}
 
 	dir := setupGitRepo(t)
-	writeConfig(t, dir)
 	// Deliberately do NOT write a prd.json.
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -202,7 +176,6 @@ func TestSprintDryRunInvalidPRD(t *testing.T) {
 	}
 
 	dir := setupGitRepo(t)
-	writeConfig(t, dir)
 
 	// Write invalid JSON as prd.json.
 	if err := os.WriteFile(filepath.Join(dir, "prd.json"), []byte("{not valid json}"), 0644); err != nil {
