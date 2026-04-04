@@ -5,11 +5,13 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 
 	"github.com/spf13/cobra"
 
 	"github.com/swamp-dev/agentbox/internal/metrics"
+	"github.com/swamp-dev/agentbox/internal/ralph"
 	"github.com/swamp-dev/agentbox/internal/supervisor"
 )
 
@@ -157,6 +159,17 @@ func runSprint(cmd *cobra.Command, args []string) error {
 }
 
 func printDryRun(cfg *supervisor.Config) error {
+	// Validate repo path or URL.
+	if err := validateRepo(cfg); err != nil {
+		return fmt.Errorf("repo validation: %w", err)
+	}
+
+	// Validate PRD file exists and is parseable.
+	prd, err := validatePRD(cfg)
+	if err != nil {
+		return fmt.Errorf("PRD validation: %w", err)
+	}
+
 	fmt.Println("=== Agentbox Sprint (Dry Run) ===")
 	fmt.Println()
 	fmt.Printf("Repository:     %s\n", orDefault(cfg.RepoURL, "(current directory)"))
@@ -173,6 +186,19 @@ func printDryRun(cfg *supervisor.Config) error {
 	fmt.Printf("Journal:        %v\n", cfg.JournalEnabled)
 	fmt.Printf("Review:         %v\n", cfg.ReviewEnabled)
 	fmt.Println()
+
+	// Print task summary from validated PRD.
+	tasks := prd.ExportTasks()
+	fmt.Printf("PRD: %q — %d task(s)\n", prd.Name, len(tasks))
+	for _, t := range tasks {
+		deps := ""
+		if len(t.DependsOn) > 0 {
+			deps = fmt.Sprintf(" (depends on: %v)", t.DependsOn)
+		}
+		fmt.Printf("  • [%s] %s: %s%s\n", t.Status, t.ID, t.Title, deps)
+	}
+	fmt.Println()
+
 	fmt.Println("Execution plan:")
 	fmt.Println("  1. Clone/open repository")
 	fmt.Println("  2. Create worktree branch")
@@ -184,6 +210,51 @@ func printDryRun(cfg *supervisor.Config) error {
 	fmt.Println("  6. Open pull request")
 	fmt.Println()
 	fmt.Println("(No changes made — use without --dry-run to execute)")
+	return nil
+}
+
+// validatePRD loads and parses the PRD file, returning the parsed PRD or an error.
+func validatePRD(cfg *supervisor.Config) (*ralph.PRD, error) {
+	prdPath := cfg.PRDFile
+	if !filepath.IsAbs(prdPath) {
+		workDir := cfg.WorkDir
+		if workDir == "" {
+			workDir = "."
+		}
+		prdPath = filepath.Join(workDir, prdPath)
+	}
+
+	prd, err := ralph.LoadPRD(prdPath)
+	if err != nil {
+		return nil, err
+	}
+	return prd, nil
+}
+
+// validateRepo checks that the repo path exists (if local) or that a remote
+// URL is non-empty. Full URL validation is deferred to workflow.CloneOrOpen
+// which handles all git-supported schemes including SCP-style SSH URLs
+// (e.g. git@github.com:user/repo.git).
+func validateRepo(cfg *supervisor.Config) error {
+	if cfg.RepoURL != "" {
+		// Remote repo: just verify non-empty. The workflow layer validates
+		// the URL at clone time, supporting http(s), ssh, git, and SCP formats.
+		return nil
+	}
+
+	// Local repo: check WorkDir exists.
+	workDir := cfg.WorkDir
+	if workDir == "" {
+		return nil
+	}
+
+	info, err := os.Stat(workDir)
+	if err != nil {
+		return fmt.Errorf("work directory %q does not exist", workDir)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("work directory %q is not a directory", workDir)
+	}
 	return nil
 }
 
