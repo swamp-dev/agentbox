@@ -1037,3 +1037,104 @@ func TestExportDashboardData(t *testing.T) {
 		t.Errorf("expected 1 completed, got %d", data.TaskStats.Completed)
 	}
 }
+
+func TestLatestResumableSession(t *testing.T) {
+	s := openTestStore(t)
+
+	// No sessions at all.
+	_, err := s.LatestResumableSession()
+	if err == nil {
+		t.Fatal("expected error for empty store")
+	}
+
+	// Create a completed session — not resumable.
+	id1, _ := s.CreateSession("repo1", "feat/a", `{}`)
+	_ = s.UpdateSessionStatus(id1, "completed")
+
+	_, err = s.LatestResumableSession()
+	if err == nil {
+		t.Fatal("expected error when only completed sessions exist")
+	}
+
+	// Create an interrupted session — should be resumable.
+	id2, _ := s.CreateSession("repo2", "feat/b", `{"sprint_size":5}`)
+	_ = s.UpdateSessionStatus(id2, "interrupted")
+
+	sess, err := s.LatestResumableSession()
+	if err != nil {
+		t.Fatalf("LatestResumableSession: %v", err)
+	}
+	if sess.ID != id2 {
+		t.Errorf("expected session %d, got %d", id2, sess.ID)
+	}
+	if sess.Status != "interrupted" {
+		t.Errorf("expected status 'interrupted', got %q", sess.Status)
+	}
+
+	// Create a running session — should NOT be resumable (risk of concurrent writers).
+	_, _ = s.CreateSession("repo3", "feat/c", `{}`)
+	// Default status is "running".
+
+	// The interrupted session (id2) should still be returned, not the running one.
+	sess, err = s.LatestResumableSession()
+	if err != nil {
+		t.Fatalf("LatestResumableSession: %v", err)
+	}
+	if sess.ID != id2 {
+		t.Errorf("expected session %d (interrupted), got %d", id2, sess.ID)
+	}
+}
+
+func TestMaxIterationForSession(t *testing.T) {
+	s := openTestStore(t)
+	sessionID, _ := s.CreateSession("", "main", "")
+
+	// No resource usage yet.
+	maxIter, err := s.MaxIterationForSession(sessionID)
+	if err != nil {
+		t.Fatalf("MaxIterationForSession: %v", err)
+	}
+	if maxIter != 0 {
+		t.Errorf("expected 0, got %d", maxIter)
+	}
+
+	// Add some resource usage entries.
+	_ = s.RecordUsage(&ResourceUsage{SessionID: sessionID, Iteration: 3, EstimatedTokens: 100})
+	_ = s.RecordUsage(&ResourceUsage{SessionID: sessionID, Iteration: 7, EstimatedTokens: 200})
+	_ = s.RecordUsage(&ResourceUsage{SessionID: sessionID, Iteration: 5, EstimatedTokens: 150})
+
+	maxIter, err = s.MaxIterationForSession(sessionID)
+	if err != nil {
+		t.Fatalf("MaxIterationForSession: %v", err)
+	}
+	if maxIter != 7 {
+		t.Errorf("expected 7, got %d", maxIter)
+	}
+}
+
+func TestMaxSprintForSession(t *testing.T) {
+	s := openTestStore(t)
+	sessionID, _ := s.CreateSession("", "main", "")
+
+	// No sprint reports yet.
+	maxSprint, err := s.MaxSprintForSession(sessionID)
+	if err != nil {
+		t.Fatalf("MaxSprintForSession: %v", err)
+	}
+	if maxSprint != 0 {
+		t.Errorf("expected 0, got %d", maxSprint)
+	}
+
+	// Add sprint reports.
+	_ = s.SaveSprintReport(&SprintReport{SessionID: sessionID, SprintNumber: 2})
+	_ = s.SaveSprintReport(&SprintReport{SessionID: sessionID, SprintNumber: 5})
+	_ = s.SaveSprintReport(&SprintReport{SessionID: sessionID, SprintNumber: 3})
+
+	maxSprint, err = s.MaxSprintForSession(sessionID)
+	if err != nil {
+		t.Fatalf("MaxSprintForSession: %v", err)
+	}
+	if maxSprint != 5 {
+		t.Errorf("expected 5, got %d", maxSprint)
+	}
+}

@@ -1638,3 +1638,243 @@ func TestAdaptiveController_WriteEscalation(t *testing.T) {
 		t.Error("expected escalation message in file")
 	}
 }
+
+func TestNewForResume_LoadsSessionAndTasks(t *testing.T) {
+	s := openTestStore(t)
+
+	cfgJSON := `{"sprint_size":3,"max_sprints":10,"agent":"claude","branch_name":"feat/test","journal_enabled":false,"review_enabled":false}`
+	sessionID, err := s.CreateSession("", "feat/test", cfgJSON)
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+
+	// Mark as interrupted.
+	if err := s.UpdateSessionStatus(sessionID, "interrupted"); err != nil {
+		t.Fatalf("UpdateSessionStatus: %v", err)
+	}
+
+	// Insert tasks: one completed, one pending.
+	if err := s.InsertTask(&store.Task{
+		ID: "t-1", SessionID: sessionID, Title: "Done", Status: "completed", MaxAttempts: 3,
+	}); err != nil {
+		t.Fatalf("InsertTask t-1: %v", err)
+	}
+	if err := s.InsertTask(&store.Task{
+		ID: "t-2", SessionID: sessionID, Title: "Pending", Status: "pending", MaxAttempts: 3,
+	}); err != nil {
+		t.Fatalf("InsertTask t-2: %v", err)
+	}
+
+	// Add a dependency: t-2 depends on t-1.
+	if err := s.AddDependency("t-2", "t-1"); err != nil {
+		t.Fatalf("AddDependency: %v", err)
+	}
+
+	// Record an attempt on t-1.
+	success := true
+	now := time.Now()
+	if _, err := s.RecordAttempt(&store.Attempt{
+		TaskID: "t-1", SessionID: sessionID, Number: 1, AgentName: "claude",
+		StartedAt: now, CompletedAt: &now, Success: &success, TokensUsed: 100,
+	}); err != nil {
+		t.Fatalf("RecordAttempt: %v", err)
+	}
+
+	// Add sprint report and resource usage for iteration tracking.
+	if err := s.SaveSprintReport(&store.SprintReport{
+		SessionID: sessionID, SprintNumber: 2,
+	}); err != nil {
+		t.Fatalf("SaveSprintReport: %v", err)
+	}
+	if err := s.RecordUsage(&store.ResourceUsage{
+		SessionID: sessionID, Iteration: 5, EstimatedTokens: 500,
+	}); err != nil {
+		t.Fatalf("RecordUsage: %v", err)
+	}
+
+	logger := testLogger()
+	// Use internal constructor to inject the already-open store.
+	sup, err := newForResumeWithStore(s, sessionID, t.TempDir(), logger)
+	if err != nil {
+		t.Fatalf("newForResumeWithStore: %v", err)
+	}
+
+	// Verify session ID.
+	if sup.SessionID() != sessionID {
+		t.Errorf("expected session ID %d, got %d", sessionID, sup.SessionID())
+	}
+
+	// Verify config was restored.
+	if sup.cfg.SprintSize != 3 {
+		t.Errorf("expected sprint size 3, got %d", sup.cfg.SprintSize)
+	}
+	if sup.cfg.Agent != "claude" {
+		t.Errorf("expected agent 'claude', got %q", sup.cfg.Agent)
+	}
+
+	// Verify task DB was restored.
+	total, completed, pending, _, _ := sup.taskDB.Stats()
+	if total != 2 {
+		t.Errorf("expected 2 tasks, got %d", total)
+	}
+	if completed != 1 {
+		t.Errorf("expected 1 completed, got %d", completed)
+	}
+	if pending != 1 {
+		t.Errorf("expected 1 pending, got %d", pending)
+	}
+
+	// Verify completed task has its attempt.
+	task1, ok := sup.taskDB.Get("t-1")
+	if !ok {
+		t.Fatal("expected task t-1 in taskDB")
+	}
+	if len(task1.Attempts) != 1 {
+		t.Errorf("expected 1 attempt on t-1, got %d", len(task1.Attempts))
+	}
+
+	// Verify dependencies were restored.
+	task2, ok := sup.taskDB.Get("t-2")
+	if !ok {
+		t.Fatal("expected task t-2 in taskDB")
+	}
+	if len(task2.DependsOn) != 1 || task2.DependsOn[0] != "t-1" {
+		t.Errorf("expected t-2 to depend on t-1, got %v", task2.DependsOn)
+	}
+
+	// Verify session is still "interrupted" — status changes to "running"
+	// only when Resume() is actually called, not in the constructor.
+	sess, err := s.GetSession(sessionID)
+	if err != nil {
+		t.Fatalf("GetSession: %v", err)
+	}
+	if sess.Status != "interrupted" {
+		t.Errorf("expected session status 'interrupted' (not updated until Resume), got %q", sess.Status)
+	}
+}
+
+func TestNewForResume_RejectsCompletedSession(t *testing.T) {
+	s := openTestStore(t)
+	sessionID, _ := s.CreateSession("", "main", `{}`)
+	_ = s.UpdateSessionStatus(sessionID, "completed")
+
+	_, err := newForResumeWithStore(s, sessionID, t.TempDir(), testLogger())
+	if err == nil {
+		t.Fatal("expected error for completed session")
+	}
+	if !strings.Contains(err.Error(), "not resumable") {
+		t.Errorf("expected 'not resumable' error, got: %v", err)
+	}
+}
+
+func TestNewForResume_RejectsFailedSession(t *testing.T) {
+	s := openTestStore(t)
+	sessionID, _ := s.CreateSession("", "main", `{}`)
+	_ = s.UpdateSessionStatus(sessionID, "failed")
+
+	_, err := newForResumeWithStore(s, sessionID, t.TempDir(), testLogger())
+	if err == nil {
+		t.Fatal("expected error for failed session")
+	}
+	if !strings.Contains(err.Error(), "not resumable") {
+		t.Errorf("expected 'not resumable' error, got: %v", err)
+	}
+}
+
+func TestNewForResume_RejectsRunningSession(t *testing.T) {
+	s := openTestStore(t)
+	sessionID, _ := s.CreateSession("", "main", `{}`)
+	// Default status is "running" — should not be resumable to avoid
+	// concurrent writers.
+
+	_, err := newForResumeWithStore(s, sessionID, t.TempDir(), testLogger())
+	if err == nil {
+		t.Fatal("expected error for running session")
+	}
+	if !strings.Contains(err.Error(), "not resumable") {
+		t.Errorf("expected 'not resumable' error, got: %v", err)
+	}
+}
+
+func TestResume_SkipsCompletedTasks(t *testing.T) {
+	s := openTestStore(t)
+
+	cfgJSON := `{"sprint_size":2,"max_sprints":1,"agent":"claude","journal_enabled":false,"review_enabled":false}`
+	sessionID, _ := s.CreateSession("", "feat/resume-test", cfgJSON)
+	_ = s.UpdateSessionStatus(sessionID, "interrupted")
+
+	// t-1 is already completed.
+	_ = s.InsertTask(&store.Task{
+		ID: "t-1", SessionID: sessionID, Title: "Done", Status: "completed", MaxAttempts: 3,
+	})
+	// t-2 is still pending.
+	_ = s.InsertTask(&store.Task{
+		ID: "t-2", SessionID: sessionID, Title: "Pending", Status: "pending", MaxAttempts: 3,
+	})
+
+	logger := testLogger()
+	sup, err := newForResumeWithStore(s, sessionID, t.TempDir(), logger)
+	if err != nil {
+		t.Fatalf("newForResumeWithStore: %v", err)
+	}
+
+	// Set DryRun so we don't need Docker.
+	sup.cfg.DryRun = true
+
+	ctx := context.Background()
+	err = sup.Resume(ctx)
+	if err != nil {
+		t.Fatalf("Resume: %v", err)
+	}
+
+	// Verify t-1 is still completed (wasn't re-run).
+	task1, _ := sup.taskDB.Get("t-1")
+	if task1.Status != taskdb.StatusCompleted {
+		t.Errorf("expected t-1 to remain completed, got %s", task1.Status)
+	}
+}
+
+func TestRun_InterruptMarksSessionInterrupted(t *testing.T) {
+	prdContent := `{"name":"Test","tasks":[{"id":"t-1","title":"Slow Task","description":"Takes a while","status":"pending","priority":1}]}`
+	repoDir := initGitRepo(t, map[string]string{"prd.json": prdContent})
+
+	cfg := DefaultConfig()
+	cfg.WorkDir = repoDir
+	cfg.BranchName = "feat/test-interrupt"
+	cfg.DryRun = true
+	cfg.JournalEnabled = false
+	cfg.ReviewEnabled = false
+	cfg.MaxSprints = 5
+	cfg.SprintSize = 5
+
+	sup, err := New(cfg, testLogger())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	// Cancel immediately so the sprint loop exits on the context check.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	err = sup.Run(ctx)
+	// Should get context.Canceled.
+	if err == nil {
+		t.Fatal("expected error from cancelled context")
+	}
+
+	// Re-open the store to verify status (Run() closes it).
+	dbPath := repoDir + "/.agentbox/agentbox.db"
+	st, err := store.Open(dbPath)
+	if err != nil {
+		t.Fatalf("re-opening store: %v", err)
+	}
+	defer st.Close()
+
+	sess, err := st.GetSession(sup.SessionID())
+	if err != nil {
+		t.Fatalf("GetSession: %v", err)
+	}
+	if sess.Status != "interrupted" {
+		t.Errorf("expected session status 'interrupted', got %q", sess.Status)
+	}
+}

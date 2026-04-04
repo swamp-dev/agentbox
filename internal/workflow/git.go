@@ -41,6 +41,13 @@ func (g *GitWorkflow) BranchName() string {
 	return g.branchName
 }
 
+// SetWorktreePath sets the worktree and branch paths directly, for use when
+// resuming an interrupted session whose worktree already exists on disk.
+func (g *GitWorkflow) SetWorktreePath(worktreePath, branchName string) {
+	g.worktreePath = worktreePath
+	g.branchName = branchName
+}
+
 // RepoDir returns the path to the main repo clone.
 func (g *GitWorkflow) RepoDir() string {
 	if g.repoURL == "" {
