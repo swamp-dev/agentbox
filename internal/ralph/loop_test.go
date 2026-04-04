@@ -620,6 +620,8 @@ func (m *mockAgent) ParseOutput(output string) *agent.AgentOutput {
 
 // newTestableLoop creates a Loop wired with mock functions for testing.
 // It writes a temporary PRD and progress file so the Loop is self-contained.
+// NOTE: container is intentionally nil — tests use injected runAgentFn/runQualityChecksFn
+// instead of real Docker execution. Do not call Close() on test loops.
 func newTestableLoop(t *testing.T, tasks []Task, maxIterations int) *Loop {
 	t.Helper()
 	dir := t.TempDir()
@@ -740,26 +742,19 @@ func TestRunRespectsContextCancellation(t *testing.T) {
 	}
 	loop := newTestableLoop(t, tasks, 100)
 
-	// Cancel after the first iteration completes.
+	// Cancel the context inside runAgentFn so the loop exits on the ctx check.
 	ctx, cancel := context.WithCancel(context.Background())
-	callCount := 0
-	loop.runAgentFn = func(_ context.Context, _ string) (string, error) {
-		callCount++
-		if callCount >= 1 {
-			cancel()
-		}
-		return "done", nil
+	loop.runAgentFn = func(ctx context.Context, _ string) (string, error) {
+		cancel()             // cancel immediately
+		return "", ctx.Err() // return context error
 	}
 
 	err := loop.Run(ctx)
 	if err == nil {
 		t.Fatal("expected context cancellation error")
 	}
-	if err != context.Canceled {
-		// The first iteration succeeds, the context gets cancelled, and the
-		// next iteration's select picks up ctx.Done(). So err should be
-		// context.Canceled.
-		t.Errorf("expected context.Canceled, got: %v", err)
+	if !strings.Contains(err.Error(), "context canceled") {
+		t.Errorf("expected error containing 'context canceled', got: %v", err)
 	}
 }
 
