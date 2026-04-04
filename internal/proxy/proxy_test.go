@@ -260,8 +260,9 @@ func TestHandleCONNECTBlockedTunnel(t *testing.T) {
 }
 
 func TestHandleCONNECTMalformed(t *testing.T) {
-	// Start proxy allowing everything (to ensure rejection is due to malformed request).
-	proxyAddr := startTestProxy(t, map[string]bool{"*:443": true})
+	// Start proxy with a real host in the allowlist.
+	// We use a concrete host (not a wildcard) because isAllowed does exact map lookup.
+	proxyAddr := startTestProxy(t, map[string]bool{"example.com:443": true})
 
 	conn, err := net.Dial("tcp", proxyAddr)
 	if err != nil {

@@ -15,10 +15,26 @@ func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
 
+// saveInitVars captures the current package-level init vars and registers
+// a t.Cleanup to restore them when the test finishes.
+func saveInitVars(t *testing.T) {
+	t.Helper()
+	origForce := initForce
+	origTemplate := initTemplate
+	origLanguage := initLanguage
+	origName := initName
+	t.Cleanup(func() {
+		initForce = origForce
+		initTemplate = origTemplate
+		initLanguage = origLanguage
+		initName = origName
+	})
+}
+
 func TestCreateConfigFile(t *testing.T) {
+	saveInitVars(t)
 	dir := t.TempDir()
 
-	// Reset package-level vars.
 	initForce = false
 	initTemplate = "standard"
 	initLanguage = ""
@@ -42,19 +58,15 @@ func TestCreateConfigFile(t *testing.T) {
 	if err := createConfigFile(dir, "test-project"); err != nil {
 		t.Fatalf("createConfigFile() with force should not error: %v", err)
 	}
-	initForce = false
 }
 
 func TestCreateConfigFile_MinimalTemplate(t *testing.T) {
+	saveInitVars(t)
 	dir := t.TempDir()
+
 	initForce = true
 	initTemplate = "minimal"
 	initLanguage = "python"
-	defer func() {
-		initForce = false
-		initTemplate = "standard"
-		initLanguage = ""
-	}()
 
 	if err := createConfigFile(dir, "minimal-project"); err != nil {
 		t.Fatalf("createConfigFile() error: %v", err)
@@ -72,7 +84,9 @@ func TestCreateConfigFile_MinimalTemplate(t *testing.T) {
 }
 
 func TestCreatePRDFile(t *testing.T) {
+	saveInitVars(t)
 	dir := t.TempDir()
+
 	initForce = false
 
 	if err := createPRDFile(dir, "test-project"); err != nil {
@@ -94,11 +108,12 @@ func TestCreatePRDFile(t *testing.T) {
 	if err := createPRDFile(dir, "test-project"); err != nil {
 		t.Fatalf("createPRDFile() with force should not error: %v", err)
 	}
-	initForce = false
 }
 
 func TestCreateProgressFile(t *testing.T) {
+	saveInitVars(t)
 	dir := t.TempDir()
+
 	initForce = false
 
 	if err := createProgressFile(dir, "test-project"); err != nil {
@@ -120,11 +135,12 @@ func TestCreateProgressFile(t *testing.T) {
 	if err := createProgressFile(dir, "test-project"); err != nil {
 		t.Fatalf("createProgressFile() with force should not error: %v", err)
 	}
-	initForce = false
 }
 
 func TestCreateAgentsMD(t *testing.T) {
+	saveInitVars(t)
 	dir := t.TempDir()
+
 	initForce = false
 
 	if err := createAgentsMD(dir); err != nil {
@@ -151,23 +167,16 @@ func TestCreateAgentsMD(t *testing.T) {
 	if err := createAgentsMD(dir); err != nil {
 		t.Fatalf("createAgentsMD() with force should not error: %v", err)
 	}
-	initForce = false
 }
 
 func TestRunNonInteractiveInit(t *testing.T) {
+	saveInitVars(t)
 	dir := t.TempDir()
 
-	// Set up package-level vars.
 	initName = "test-init"
 	initTemplate = "standard"
 	initLanguage = ""
 	initForce = true
-	defer func() {
-		initName = ""
-		initTemplate = "standard"
-		initLanguage = ""
-		initForce = false
-	}()
 
 	if err := runNonInteractiveInit(dir); err != nil {
 		t.Fatalf("runNonInteractiveInit() error: %v", err)
@@ -183,16 +192,13 @@ func TestRunNonInteractiveInit(t *testing.T) {
 }
 
 func TestRunNonInteractiveInit_DefaultsNameFromDir(t *testing.T) {
+	saveInitVars(t)
 	dir := t.TempDir()
 
 	initName = "" // should default to directory name
 	initTemplate = "standard"
 	initLanguage = ""
 	initForce = true
-	defer func() {
-		initName = ""
-		initForce = false
-	}()
 
 	if err := runNonInteractiveInit(dir); err != nil {
 		t.Fatalf("runNonInteractiveInit() error: %v", err)
