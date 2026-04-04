@@ -1,6 +1,8 @@
 package supervisor
 
 import (
+	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -10,6 +12,24 @@ import (
 	"github.com/swamp-dev/agentbox/internal/store"
 	"github.com/swamp-dev/agentbox/internal/taskdb"
 )
+
+// mockCommandExecutor records calls and returns configured responses.
+type mockCommandExecutor struct {
+	calls  []mockCall
+	output string
+	err    error
+}
+
+type mockCall struct {
+	Dir  string
+	Name string
+	Args []string
+}
+
+func (m *mockCommandExecutor) Execute(_ context.Context, dir string, name string, args ...string) (string, error) {
+	m.calls = append(m.calls, mockCall{Dir: dir, Name: name, Args: args})
+	return m.output, m.err
+}
 
 func TestApply_SimpleActions(t *testing.T) {
 	tests := []struct {
@@ -170,13 +190,13 @@ func TestWriteEscalation_CreatesFile(t *testing.T) {
 	ac := NewAdaptiveController(s, sessionID, nil, logger)
 
 	dir := t.TempDir()
-	err := ac.WriteEscalation(dir, "first escalation")
+	err := ac.WriteEscalation(context.Background(), dir, "first escalation")
 	if err != nil {
 		t.Fatalf("WriteEscalation: %v", err)
 	}
 
 	// Append a second one.
-	err = ac.WriteEscalation(dir, "second escalation")
+	err = ac.WriteEscalation(context.Background(), dir, "second escalation")
 	if err != nil {
 		t.Fatalf("WriteEscalation(2): %v", err)
 	}
@@ -380,5 +400,151 @@ func TestApply_NilTaskDB_FallsBack(t *testing.T) {
 	}
 	if !strings.Contains(actions[1], "Recommendation: split task") {
 		t.Errorf("expected split recommendation, got %q", actions[1])
+	}
+}
+
+func TestWriteEscalation_FileMethod(t *testing.T) {
+	s := openTestStore(t)
+	sessionID, _ := s.CreateSession("", "main", "")
+	logger := testLogger()
+	ac := NewAdaptiveController(s, sessionID, nil, logger)
+	ac.SetEscalationMethod("file")
+
+	dir := t.TempDir()
+	if err := ac.WriteEscalation(context.Background(), dir, "file escalation test"); err != nil {
+		t.Fatalf("WriteEscalation: %v", err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(dir, ".agentbox", "escalations.md"))
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if !strings.Contains(string(data), "file escalation test") {
+		t.Error("expected escalation message in file")
+	}
+}
+
+func TestWriteEscalation_NoneMethod(t *testing.T) {
+	s := openTestStore(t)
+	sessionID, _ := s.CreateSession("", "main", "")
+	logger := testLogger()
+	ac := NewAdaptiveController(s, sessionID, nil, logger)
+	ac.SetEscalationMethod("none")
+
+	dir := t.TempDir()
+	if err := ac.WriteEscalation(context.Background(), dir, "none escalation test"); err != nil {
+		t.Fatalf("WriteEscalation: %v", err)
+	}
+
+	// No file should be created.
+	_, err := os.Stat(filepath.Join(dir, ".agentbox", "escalations.md"))
+	if err == nil {
+		t.Error("expected no escalation file for 'none' method, but file exists")
+	}
+}
+
+func TestWriteEscalation_GitHubIssueMethod(t *testing.T) {
+	s := openTestStore(t)
+	sessionID, _ := s.CreateSession("", "main", "")
+	logger := testLogger()
+	ac := NewAdaptiveController(s, sessionID, nil, logger)
+	ac.SetEscalationMethod("github_issue")
+
+	mock := &mockCommandExecutor{output: "https://github.com/org/repo/issues/42\n"}
+	ac.SetCommandExecutor(mock)
+
+	dir := t.TempDir()
+	if err := ac.WriteEscalation(context.Background(), dir, "task T-1 failed 3 times"); err != nil {
+		t.Fatalf("WriteEscalation: %v", err)
+	}
+
+	// Verify gh was called correctly.
+	if len(mock.calls) != 1 {
+		t.Fatalf("expected 1 command call, got %d", len(mock.calls))
+	}
+	call := mock.calls[0]
+	if call.Name != "gh" {
+		t.Errorf("expected command 'gh', got %q", call.Name)
+	}
+	if call.Dir != dir {
+		t.Errorf("expected dir %q, got %q", dir, call.Dir)
+	}
+
+	// Check args contain expected values.
+	args := strings.Join(call.Args, " ")
+	if !strings.Contains(args, "issue") || !strings.Contains(args, "create") {
+		t.Errorf("expected 'issue create' in args, got %q", args)
+	}
+	if !strings.Contains(args, "task T-1 failed 3 times") {
+		t.Errorf("expected escalation message in title args, got %q", args)
+	}
+
+	// No file should be created.
+	_, err := os.Stat(filepath.Join(dir, ".agentbox", "escalations.md"))
+	if err == nil {
+		t.Error("expected no local file for github_issue method")
+	}
+}
+
+func TestWriteEscalation_GitHubIssueMethod_Error(t *testing.T) {
+	s := openTestStore(t)
+	sessionID, _ := s.CreateSession("", "main", "")
+	logger := testLogger()
+	ac := NewAdaptiveController(s, sessionID, nil, logger)
+	ac.SetEscalationMethod("github_issue")
+
+	mock := &mockCommandExecutor{err: fmt.Errorf("gh: not authenticated")}
+	ac.SetCommandExecutor(mock)
+
+	err := ac.WriteEscalation(context.Background(), t.TempDir(), "failing escalation")
+	if err == nil {
+		t.Fatal("expected error when gh fails")
+	}
+	if !strings.Contains(err.Error(), "creating GitHub issue") {
+		t.Errorf("expected wrapped error, got %q", err.Error())
+	}
+}
+
+func TestWriteEscalation_DefaultMethodIsFile(t *testing.T) {
+	s := openTestStore(t)
+	sessionID, _ := s.CreateSession("", "main", "")
+	logger := testLogger()
+	ac := NewAdaptiveController(s, sessionID, nil, logger)
+	// Don't set escalation method — should default to "file".
+
+	dir := t.TempDir()
+	if err := ac.WriteEscalation(context.Background(), dir, "default method test"); err != nil {
+		t.Fatalf("WriteEscalation: %v", err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(dir, ".agentbox", "escalations.md"))
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if !strings.Contains(string(data), "default method test") {
+		t.Error("expected escalation message in file for default method")
+	}
+}
+
+func TestTruncate(t *testing.T) {
+	tests := []struct {
+		name   string
+		input  string
+		maxLen int
+		want   string
+	}{
+		{"short string", "hello", 10, "hello"},
+		{"exact length", "hello", 5, "hello"},
+		{"truncated", "hello world this is long", 10, "hello w..."},
+		{"utf8 multibyte", "こんにちは世界です", 6, "こんに..."},
+		{"utf8 short enough", "日本語", 5, "日本語"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := truncate(tt.input, tt.maxLen)
+			if got != tt.want {
+				t.Errorf("truncate(%q, %d) = %q, want %q", tt.input, tt.maxLen, got, tt.want)
+			}
+		})
 	}
 }
