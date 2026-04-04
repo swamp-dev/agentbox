@@ -4,7 +4,33 @@ import (
 	"bytes"
 	"strings"
 	"testing"
+
+	"github.com/spf13/pflag"
 )
+
+// resetRunFlags resets package-level run flag variables to their defaults
+// and clears cobra's Changed tracking. This is necessary because cobra sets
+// these globals during Execute() and they persist across test invocations
+// on the shared rootCmd.
+func resetRunFlags() {
+	runAgent = "claude"
+	runProject = "."
+	runPrompt = ""
+	runNetwork = "none"
+	runImage = "full"
+	runInteractive = false
+	runAllowNetwork = false
+	runAllowEndpoints = nil
+
+	runCmd.Flags().VisitAll(func(f *pflag.Flag) {
+		f.Changed = false
+	})
+	rootCmd.PersistentFlags().VisitAll(func(f *pflag.Flag) {
+		f.Changed = false
+	})
+	verbose = false
+	cfgFile = ""
+}
 
 func TestRunCmd_FlagRegistration(t *testing.T) {
 	// Verify all expected flags are registered on the run command.
@@ -62,6 +88,7 @@ func TestRunCmd_DefaultFlagValues(t *testing.T) {
 }
 
 func TestRunCmd_MissingAPIKey(t *testing.T) {
+	resetRunFlags()
 	// Without ANTHROPIC_API_KEY set, run with default agent (claude) should fail.
 	t.Setenv("ANTHROPIC_API_KEY", "")
 
@@ -81,6 +108,7 @@ func TestRunCmd_MissingAPIKey(t *testing.T) {
 }
 
 func TestRunCmd_InvalidAgent(t *testing.T) {
+	resetRunFlags()
 	// An unknown agent name should fail config validation.
 	// "bogus" passes ValidateAPIKey (no key check for unknown agents)
 	// but fails config.Validate().
@@ -100,10 +128,9 @@ func TestRunCmd_InvalidAgent(t *testing.T) {
 }
 
 func TestRunCmd_MutuallyExclusiveFlags(t *testing.T) {
+	resetRunFlags()
 	// --allow-network and --network are marked mutually exclusive.
 	// Cobra rejects using both simultaneously.
-	// NOTE: This test must run last for run command tests because cobra
-	// retains flag state on the global rootCmd.
 	var buf bytes.Buffer
 	rootCmd.SetOut(&buf)
 	rootCmd.SetErr(&buf)

@@ -4,7 +4,30 @@ import (
 	"bytes"
 	"strings"
 	"testing"
+
+	"github.com/spf13/pflag"
 )
+
+// resetRalphFlags resets package-level ralph flag variables to their defaults
+// and clears cobra's Changed tracking. This is necessary because cobra sets
+// these globals during Execute() and they persist across test invocations
+// on the shared rootCmd.
+func resetRalphFlags() {
+	ralphAgent = "claude"
+	ralphProject = "."
+	ralphMaxIterations = 10
+	ralphPRDFile = "prd.json"
+	ralphAutoCommit = true
+
+	ralphCmd.Flags().VisitAll(func(f *pflag.Flag) {
+		f.Changed = false
+	})
+	rootCmd.PersistentFlags().VisitAll(func(f *pflag.Flag) {
+		f.Changed = false
+	})
+	verbose = false
+	cfgFile = ""
+}
 
 func TestRalphCmd_FlagRegistration(t *testing.T) {
 	flags := []struct {
@@ -58,6 +81,7 @@ func TestRalphCmd_DefaultFlagValues(t *testing.T) {
 }
 
 func TestRalphCmd_MissingAPIKey(t *testing.T) {
+	resetRalphFlags()
 	t.Setenv("ANTHROPIC_API_KEY", "")
 
 	var buf bytes.Buffer
@@ -76,6 +100,7 @@ func TestRalphCmd_MissingAPIKey(t *testing.T) {
 }
 
 func TestRalphCmd_InvalidAgent(t *testing.T) {
+	resetRalphFlags()
 	var buf bytes.Buffer
 	rootCmd.SetOut(&buf)
 	rootCmd.SetErr(&buf)
@@ -92,6 +117,7 @@ func TestRalphCmd_InvalidAgent(t *testing.T) {
 }
 
 func TestRalphCmd_MissingPRDFile(t *testing.T) {
+	resetRalphFlags()
 	// Use claude-cli to bypass API key check (requires ~/.claude/ which exists in test env).
 	dir := t.TempDir()
 
@@ -116,6 +142,7 @@ func TestRalphCmd_MissingPRDFile(t *testing.T) {
 }
 
 func TestRalphCmd_PRDFileExistsButProjectMissing(t *testing.T) {
+	resetRalphFlags()
 	// When the project directory doesn't exist, the PRD path resolution
 	// should fail because the combined path won't exist.
 	var buf bytes.Buffer
@@ -139,6 +166,7 @@ func TestRalphCmd_PRDFileExistsButProjectMissing(t *testing.T) {
 }
 
 func TestRalphCmd_PRDPathCombination(t *testing.T) {
+	resetRalphFlags()
 	// Verify that the PRD path is constructed as project/prd.
 	// We test this by checking that a PRD at project/custom.json is found
 	// when --project=dir and --prd=custom.json.

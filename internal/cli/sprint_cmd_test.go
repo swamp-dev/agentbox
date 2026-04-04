@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/spf13/pflag"
 	"github.com/swamp-dev/agentbox/internal/metrics"
 )
 
@@ -93,6 +94,15 @@ func resetSprintFlags() {
 	sprintDockerCPUs = "2"
 	sprintDockerNetwork = "none"
 	sprintDockerAllowEndpoints = nil
+
+	sprintCmd.Flags().VisitAll(func(f *pflag.Flag) {
+		f.Changed = false
+	})
+	rootCmd.PersistentFlags().VisitAll(func(f *pflag.Flag) {
+		f.Changed = false
+	})
+	verbose = false
+	cfgFile = ""
 }
 
 func TestSprintCmd_SessionWithoutResume(t *testing.T) {
@@ -154,12 +164,13 @@ func TestSprintCmd_DryRunWithInvalidRepoPath(t *testing.T) {
 	rootCmd.SetArgs([]string{
 		"sprint",
 		"--dry-run",
-		"--prd", "prd.json",
+		"--prd", "/nonexistent/path/prd.json",
 	})
 
-	// This will try to find prd.json in cwd; the specific error depends on
-	// the environment but it should not panic.
-	_ = rootCmd.Execute()
+	err := rootCmd.Execute()
+	if err == nil {
+		t.Fatal("expected error for dry-run with nonexistent PRD path, got nil")
+	}
 }
 
 func TestBudgetSummary(t *testing.T) {
