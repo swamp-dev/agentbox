@@ -423,7 +423,10 @@ func (l *Loop) RunSingleTask(ctx context.Context, task *Task, prompt string) *It
 	}
 
 	if saveErr := l.prd.Save(l.projectPath + "/" + l.cfg.Ralph.PRDFile); saveErr != nil {
-		l.logger.Warn("failed to save PRD", "error", saveErr)
+		l.logProgressErr("save PRD", saveErr)
+		result.Error = fmt.Sprintf("failed to save PRD: %s", saveErr)
+		result.Success = false
+		return result
 	}
 	l.logProgressErr("RecordComplete", l.progress.RecordComplete(task.ID, task.Title, "Task completed successfully", result.Learnings))
 
