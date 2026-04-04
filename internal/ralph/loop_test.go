@@ -10,6 +10,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/swamp-dev/agentbox/internal/agent"
+	"github.com/swamp-dev/agentbox/internal/config"
 )
 
 func TestValidateQualityCheckCommand(t *testing.T) {
@@ -591,5 +594,471 @@ func TestRandomSuffix(t *testing.T) {
 	// Two calls should (almost certainly) differ
 	if s1 == s2 {
 		t.Error("expected different suffixes from two calls")
+	}
+}
+
+// =============================================================================
+// Mock agent for loop tests
+// =============================================================================
+
+// mockAgent implements agent.Agent for testing.
+type mockAgent struct {
+	parseOutputFn func(output string) *agent.AgentOutput
+}
+
+func (m *mockAgent) Name() string               { return "mock" }
+func (m *mockAgent) Command(_ string) []string  { return []string{"echo", "mock"} }
+func (m *mockAgent) Environment() []string      { return nil }
+func (m *mockAgent) StopSignal() string         { return "<promise>COMPLETE</promise>" }
+func (m *mockAgent) AllowedEndpoints() []string { return nil }
+func (m *mockAgent) ParseOutput(output string) *agent.AgentOutput {
+	if m.parseOutputFn != nil {
+		return m.parseOutputFn(output)
+	}
+	return &agent.AgentOutput{Success: true, Message: "ok"}
+}
+
+// newTestableLoop creates a Loop wired with mock functions for testing.
+// It writes a temporary PRD and progress file so the Loop is self-contained.
+// NOTE: container is intentionally nil — tests use injected runAgentFn/runQualityChecksFn
+// instead of real Docker execution. Do not call Close() on test loops.
+func newTestableLoop(t *testing.T, tasks []Task, maxIterations int) *Loop {
+	t.Helper()
+	dir := t.TempDir()
+
+	prd := &PRD{
+		Name:  "Test PRD",
+		Tasks: tasks,
+	}
+	prd.updateMetadata()
+
+	// Write PRD file so Save() works.
+	prdPath := filepath.Join(dir, "prd.json")
+	if err := prd.Save(prdPath); err != nil {
+		t.Fatal(err)
+	}
+
+	progress := NewProgress(filepath.Join(dir, "progress.txt"))
+
+	cfg := config.DefaultConfig()
+	cfg.Ralph.MaxIterations = maxIterations
+	cfg.Ralph.AutoCommit = false
+	cfg.Ralph.PRDFile = "prd.json"
+	cfg.Ralph.ProgressFile = "progress.txt"
+
+	l := &Loop{
+		cfg:         cfg,
+		prd:         prd,
+		progress:    progress,
+		agent:       &mockAgent{},
+		logger:      slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError})),
+		projectPath: dir,
+	}
+	// Default mock functions: agent succeeds, quality checks pass.
+	l.runAgentFn = func(_ context.Context, _ string) (string, error) {
+		return "task done\n<promise>COMPLETE</promise>", nil
+	}
+	l.runQualityChecksFn = func(_ context.Context) error {
+		return nil
+	}
+	return l
+}
+
+// =============================================================================
+// buildPrompt tests
+// =============================================================================
+
+func TestBuildPrompt(t *testing.T) {
+	tasks := []Task{
+		{ID: "task-1", Title: "Setup project", Description: "Initialize the project structure", Status: "pending"},
+	}
+	loop := newTestableLoop(t, tasks, 10)
+
+	task := &tasks[0]
+	prompt := loop.buildPrompt(task)
+
+	tests := []struct {
+		name     string
+		contains string
+	}{
+		{"contains PRD name", "Test PRD"},
+		{"contains task ID", "task-1"},
+		{"contains task title", "Setup project"},
+		{"contains task description", "Initialize the project structure"},
+		{"contains stop signal", loop.cfg.Ralph.StopSignal},
+		{"contains instructions", "Complete the task"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if !strings.Contains(prompt, tt.contains) {
+				t.Errorf("prompt missing %q; got:\n%s", tt.contains, prompt)
+			}
+		})
+	}
+}
+
+// =============================================================================
+// Run() loop logic tests
+// =============================================================================
+
+func TestRunCompletesWhenAllTasksDone(t *testing.T) {
+	tasks := []Task{
+		{ID: "task-1", Title: "Only task", Description: "Do something", Status: "pending"},
+	}
+	loop := newTestableLoop(t, tasks, 10)
+
+	err := loop.Run(context.Background())
+	if err != nil {
+		t.Fatalf("Run() returned error: %v", err)
+	}
+
+	if !loop.prd.IsComplete() {
+		t.Error("expected PRD to be complete after Run()")
+	}
+}
+
+func TestRunStopsAtMaxIterations(t *testing.T) {
+	// Two tasks but max 1 iteration — should fail with max iterations reached.
+	tasks := []Task{
+		{ID: "task-1", Title: "First", Description: "first", Status: "pending"},
+		{ID: "task-2", Title: "Second", Description: "second", Status: "pending"},
+	}
+	loop := newTestableLoop(t, tasks, 1)
+
+	err := loop.Run(context.Background())
+	if err == nil {
+		t.Fatal("expected error when max iterations reached")
+	}
+	if !strings.Contains(err.Error(), "max iterations") {
+		t.Errorf("expected 'max iterations' error, got: %v", err)
+	}
+}
+
+func TestRunRespectsContextCancellation(t *testing.T) {
+	tasks := []Task{
+		{ID: "task-1", Title: "First", Description: "first", Status: "pending"},
+		{ID: "task-2", Title: "Second", Description: "second", Status: "pending"},
+	}
+	loop := newTestableLoop(t, tasks, 100)
+
+	// Cancel the context inside runAgentFn so the loop exits on the ctx check.
+	ctx, cancel := context.WithCancel(context.Background())
+	loop.runAgentFn = func(ctx context.Context, _ string) (string, error) {
+		cancel()             // cancel immediately
+		return "", ctx.Err() // return context error
+	}
+
+	err := loop.Run(ctx)
+	if err == nil {
+		t.Fatal("expected context cancellation error")
+	}
+	if !strings.Contains(err.Error(), "context canceled") {
+		t.Errorf("expected error containing 'context canceled', got: %v", err)
+	}
+}
+
+func TestRunEarlyExitWhenPRDAlreadyComplete(t *testing.T) {
+	tasks := []Task{
+		{ID: "task-1", Title: "Done", Description: "already done", Status: "completed"},
+	}
+	loop := newTestableLoop(t, tasks, 10)
+
+	agentCalled := false
+	loop.runAgentFn = func(_ context.Context, _ string) (string, error) {
+		agentCalled = true
+		return "", nil
+	}
+
+	err := loop.Run(context.Background())
+	if err != nil {
+		t.Fatalf("Run() returned error: %v", err)
+	}
+	if agentCalled {
+		t.Error("agent should not be called when PRD is already complete")
+	}
+}
+
+func TestRunMultipleTasksSequentially(t *testing.T) {
+	tasks := []Task{
+		{ID: "task-1", Title: "First", Description: "first task", Status: "pending"},
+		{ID: "task-2", Title: "Second", Description: "second task", Status: "pending"},
+		{ID: "task-3", Title: "Third", Description: "third task", Status: "pending"},
+	}
+	loop := newTestableLoop(t, tasks, 10)
+
+	var promptsSeen []string
+	loop.runAgentFn = func(_ context.Context, prompt string) (string, error) {
+		promptsSeen = append(promptsSeen, prompt)
+		return "done", nil
+	}
+
+	err := loop.Run(context.Background())
+	if err != nil {
+		t.Fatalf("Run() returned error: %v", err)
+	}
+	if len(promptsSeen) != 3 {
+		t.Fatalf("expected 3 agent calls, got %d", len(promptsSeen))
+	}
+	// Verify tasks were processed in order.
+	for i, id := range []string{"task-1", "task-2", "task-3"} {
+		if !strings.Contains(promptsSeen[i], id) {
+			t.Errorf("prompt %d should contain %s", i, id)
+		}
+	}
+}
+
+// =============================================================================
+// runIteration tests
+// =============================================================================
+
+func TestRunIterationAgentFailure(t *testing.T) {
+	tasks := []Task{
+		{ID: "task-1", Title: "Fail task", Description: "will fail", Status: "pending"},
+	}
+	loop := newTestableLoop(t, tasks, 10)
+
+	loop.runAgentFn = func(_ context.Context, _ string) (string, error) {
+		return "", fmt.Errorf("connection refused")
+	}
+
+	err := loop.runIteration(context.Background())
+	if err == nil {
+		t.Fatal("expected error from agent failure")
+	}
+	if !strings.Contains(err.Error(), "agent execution failed") {
+		t.Errorf("expected 'agent execution failed' error, got: %v", err)
+	}
+}
+
+func TestRunIterationAgentReportsFailure(t *testing.T) {
+	tasks := []Task{
+		{ID: "task-1", Title: "Agent fails", Description: "agent says no", Status: "pending"},
+	}
+	loop := newTestableLoop(t, tasks, 10)
+
+	loop.agent = &mockAgent{
+		parseOutputFn: func(_ string) *agent.AgentOutput {
+			return &agent.AgentOutput{Success: false, Message: "could not complete task"}
+		},
+	}
+
+	err := loop.runIteration(context.Background())
+	if err == nil {
+		t.Fatal("expected error from agent reported failure")
+	}
+	if !strings.Contains(err.Error(), "agent reported failure") {
+		t.Errorf("expected 'agent reported failure' error, got: %v", err)
+	}
+}
+
+func TestRunIterationQualityCheckFailure(t *testing.T) {
+	tasks := []Task{
+		{ID: "task-1", Title: "QC fail", Description: "quality check fails", Status: "pending"},
+	}
+	loop := newTestableLoop(t, tasks, 10)
+
+	loop.runQualityChecksFn = func(_ context.Context) error {
+		return fmt.Errorf("lint: 5 errors found")
+	}
+
+	err := loop.runIteration(context.Background())
+	if err == nil {
+		t.Fatal("expected error from quality check failure")
+	}
+	if !strings.Contains(err.Error(), "quality checks failed") {
+		t.Errorf("expected 'quality checks failed' error, got: %v", err)
+	}
+}
+
+func TestRunIterationNoAvailableTasks(t *testing.T) {
+	// All tasks completed — NextTask() returns nil.
+	tasks := []Task{
+		{ID: "task-1", Title: "Done", Description: "done", Status: "completed"},
+	}
+	loop := newTestableLoop(t, tasks, 10)
+
+	err := loop.runIteration(context.Background())
+	if err == nil {
+		t.Fatal("expected error when no tasks available")
+	}
+	if !strings.Contains(err.Error(), "no available tasks") {
+		t.Errorf("expected 'no available tasks' error, got: %v", err)
+	}
+}
+
+func TestRunIterationMarksTaskComplete(t *testing.T) {
+	tasks := []Task{
+		{ID: "task-1", Title: "Complete me", Description: "should complete", Status: "pending"},
+	}
+	loop := newTestableLoop(t, tasks, 10)
+
+	loop.runAgentFn = func(_ context.Context, _ string) (string, error) {
+		return "Learning: always check errors\ndone", nil
+	}
+
+	err := loop.runIteration(context.Background())
+	if err != nil {
+		t.Fatalf("runIteration() returned error: %v", err)
+	}
+
+	task := loop.prd.GetTask("task-1")
+	if task.Status != "completed" {
+		t.Errorf("expected task status 'completed', got %q", task.Status)
+	}
+	if !strings.Contains(task.Learnings, "always check errors") {
+		t.Errorf("expected learnings to contain 'always check errors', got %q", task.Learnings)
+	}
+}
+
+// =============================================================================
+// RunSingleTask tests
+// =============================================================================
+
+func TestRunSingleTaskSuccess(t *testing.T) {
+	tasks := []Task{
+		{ID: "task-1", Title: "Single task", Description: "run once", Status: "pending"},
+	}
+	loop := newTestableLoop(t, tasks, 10)
+
+	loop.runAgentFn = func(_ context.Context, _ string) (string, error) {
+		return "Learning: tests are important\nall done", nil
+	}
+
+	result := loop.RunSingleTask(context.Background(), &tasks[0], "do the thing")
+	if !result.Success {
+		t.Fatalf("expected success, got error: %s", result.Error)
+	}
+	if !result.QualityOK {
+		t.Error("expected QualityOK to be true")
+	}
+	if len(result.Learnings) != 1 || result.Learnings[0] != "tests are important" {
+		t.Errorf("unexpected learnings: %v", result.Learnings)
+	}
+}
+
+func TestRunSingleTaskAgentError(t *testing.T) {
+	tasks := []Task{
+		{ID: "task-1", Title: "Fail task", Description: "will fail", Status: "pending"},
+	}
+	loop := newTestableLoop(t, tasks, 10)
+
+	loop.runAgentFn = func(_ context.Context, _ string) (string, error) {
+		return "", fmt.Errorf("timeout")
+	}
+
+	result := loop.RunSingleTask(context.Background(), &tasks[0], "do the thing")
+	if result.Success {
+		t.Fatal("expected failure")
+	}
+	if !strings.Contains(result.Error, "agent execution failed") {
+		t.Errorf("expected 'agent execution failed' error, got: %s", result.Error)
+	}
+}
+
+func TestRunSingleTaskQualityCheckFailure(t *testing.T) {
+	tasks := []Task{
+		{ID: "task-1", Title: "QC fail", Description: "qc fails", Status: "pending"},
+	}
+	loop := newTestableLoop(t, tasks, 10)
+
+	loop.runQualityChecksFn = func(_ context.Context) error {
+		return fmt.Errorf("tests failed: 3 errors")
+	}
+
+	result := loop.RunSingleTask(context.Background(), &tasks[0], "do the thing")
+	if result.Success {
+		t.Fatal("expected failure")
+	}
+	if result.QualityOK {
+		t.Error("expected QualityOK to be false")
+	}
+	if !strings.Contains(result.Error, "quality check failed") {
+		t.Errorf("expected 'quality check failed' error, got: %s", result.Error)
+	}
+}
+
+func TestRunSingleTaskIncrementsIteration(t *testing.T) {
+	tasks := []Task{
+		{ID: "task-1", Title: "First", Description: "first", Status: "pending"},
+	}
+	loop := newTestableLoop(t, tasks, 10)
+
+	before := loop.GetIteration()
+	loop.RunSingleTask(context.Background(), &tasks[0], "prompt")
+	after := loop.GetIteration()
+
+	if after != before+1 {
+		t.Errorf("expected iteration to increment from %d to %d, got %d", before, before+1, after)
+	}
+}
+
+func TestRunSingleTaskInvalidTaskID(t *testing.T) {
+	tasks := []Task{
+		{ID: "task-1", Title: "Real task", Description: "exists", Status: "pending"},
+	}
+	loop := newTestableLoop(t, tasks, 10)
+
+	// Pass a task that doesn't exist in the PRD.
+	bogusTask := &Task{ID: "task-999", Title: "Ghost"}
+	result := loop.RunSingleTask(context.Background(), bogusTask, "prompt")
+	if result.Success {
+		t.Fatal("expected failure for invalid task ID")
+	}
+	if result.Error == "" {
+		t.Error("expected error message for invalid task ID")
+	}
+}
+
+// =============================================================================
+// Status / GetPRD / GetIteration tests
+// =============================================================================
+
+func TestLoopStatusReflectsPRDState(t *testing.T) {
+	tasks := []Task{
+		{ID: "task-1", Title: "Done", Status: "completed"},
+		{ID: "task-2", Title: "Doing", Status: "in_progress"},
+		{ID: "task-3", Title: "Todo", Status: "pending"},
+		{ID: "task-4", Title: "Also todo", Status: "pending"},
+	}
+	loop := newTestableLoop(t, tasks, 20)
+	loop.iteration = 5
+
+	status := loop.Status()
+	if status.PRDName != "Test PRD" {
+		t.Errorf("expected PRD name 'Test PRD', got %q", status.PRDName)
+	}
+	if status.TotalTasks != 4 {
+		t.Errorf("expected 4 total tasks, got %d", status.TotalTasks)
+	}
+	if status.Completed != 1 {
+		t.Errorf("expected 1 completed, got %d", status.Completed)
+	}
+	if status.InProgress != 1 {
+		t.Errorf("expected 1 in_progress, got %d", status.InProgress)
+	}
+	if status.Pending != 2 {
+		t.Errorf("expected 2 pending, got %d", status.Pending)
+	}
+	if status.Iteration != 5 {
+		t.Errorf("expected iteration 5, got %d", status.Iteration)
+	}
+	if status.MaxIterations != 20 {
+		t.Errorf("expected max iterations 20, got %d", status.MaxIterations)
+	}
+}
+
+func TestGetPRDReturnsUnderlyingPRD(t *testing.T) {
+	tasks := []Task{
+		{ID: "task-1", Title: "Test", Status: "pending"},
+	}
+	loop := newTestableLoop(t, tasks, 10)
+
+	prd := loop.GetPRD()
+	if prd == nil {
+		t.Fatal("GetPRD() returned nil")
+	}
+	if prd.Name != "Test PRD" {
+		t.Errorf("expected PRD name 'Test PRD', got %q", prd.Name)
 	}
 }
