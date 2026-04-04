@@ -12,7 +12,7 @@ make lint           # golangci-lint run ./...
 make fmt            # go fmt + goimports
 ```
 
-CI runs: build → lint → test (with `-race`) → coverage threshold (40% floor, target 70-80%).
+CI runs: build → lint → test (with `-race`) → coverage threshold (65% floor, target 70-80%).
 
 ## Development Workflow
 
