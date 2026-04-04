@@ -1,4 +1,4 @@
-.PHONY: build test clean install lint fmt docker-build help
+.PHONY: build test test-unit test-integration test-coverage clean install lint fmt smoke docker-build help
 
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
 COMMIT ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo "none")
@@ -35,6 +35,10 @@ lint: ## Run linters
 fmt: ## Format code
 	go fmt ./...
 	goimports -w .
+
+smoke: build ## Smoke test: run help and version commands
+	bin/agentbox --help
+	bin/agentbox version
 
 clean: ## Clean build artifacts
 	rm -rf bin/

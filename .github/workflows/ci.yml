@@ -10,6 +10,24 @@ permissions:
   contents: read
 
 jobs:
+  smoke-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+
+      - name: Build binary
+        run: go build -o bin/agentbox ./cmd/agentbox
+
+      - name: Smoke test --help
+        run: bin/agentbox --help
+
+      - name: Smoke test version
+        run: bin/agentbox version
+
   ci:
     runs-on: ubuntu-latest
     steps:
@@ -34,7 +52,7 @@ jobs:
         run: |
           COVERAGE=$(go tool cover -func=coverage.out | grep total | awk '{print $3}' | sed 's/%//')
           echo "Total coverage: ${COVERAGE}%"
-          THRESHOLD=55
+          THRESHOLD=65
           if [ "$(awk "BEGIN {print (${COVERAGE} < ${THRESHOLD})}")" -eq 1 ]; then
             echo "Coverage ${COVERAGE}% is below threshold ${THRESHOLD}%"
             exit 1
