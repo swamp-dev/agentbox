@@ -19,8 +19,6 @@ func TestMain(m *testing.M) {
 	if err != nil {
 		panic("failed to create temp dir: " + err.Error())
 	}
-	defer os.RemoveAll(tmp)
-
 	binaryPath = filepath.Join(tmp, "agentbox")
 	build := exec.Command("go", "build", "-o", binaryPath, "./")
 	build.Dir = "." // cmd/agentbox
@@ -28,7 +26,9 @@ func TestMain(m *testing.M) {
 		panic("failed to build binary: " + err.Error() + "\n" + string(out))
 	}
 
-	os.Exit(m.Run())
+	code := m.Run()
+	os.RemoveAll(tmp)
+	os.Exit(code)
 }
 
 // runBinary executes the agentbox binary with the given args and a 5-second timeout.
@@ -109,6 +109,9 @@ func TestSubcommandHelp(t *testing.T) {
 func TestRunRequiresProjectOrConfig(t *testing.T) {
 	// Running 'run' without required flags in a directory without agentbox.yaml
 	// should fail with a non-zero exit code.
+	// Ensure ANTHROPIC_API_KEY is unset so the test doesn't accidentally pass
+	// due to environment differences.
+	t.Setenv("ANTHROPIC_API_KEY", "")
 	tmp := t.TempDir()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
