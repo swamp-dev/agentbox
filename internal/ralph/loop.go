@@ -34,6 +34,14 @@ type Loop struct {
 
 	projectPath string
 	iteration   int
+
+	// runAgentFn executes the agent and returns its output. Defaults to
+	// runAgent. Tests can replace this to avoid Docker/real agent calls.
+	runAgentFn func(ctx context.Context, prompt string) (string, error)
+
+	// runQualityChecksFn runs configured quality checks. Defaults to
+	// runQualityChecks. Tests can replace this to avoid shell execution.
+	runQualityChecksFn func(ctx context.Context) error
 }
 
 // NewLoop creates a new Ralph loop executor.
@@ -58,7 +66,7 @@ func NewLoop(cfg *config.Config, projectPath string, logger *slog.Logger) (*Loop
 		return nil, fmt.Errorf("loading progress: %w", err)
 	}
 
-	return &Loop{
+	l := &Loop{
 		cfg:         cfg,
 		prd:         prd,
 		progress:    progress,
@@ -66,7 +74,10 @@ func NewLoop(cfg *config.Config, projectPath string, logger *slog.Logger) (*Loop
 		container:   cm,
 		logger:      logger,
 		projectPath: projectPath,
-	}, nil
+	}
+	l.runAgentFn = l.runAgent
+	l.runQualityChecksFn = l.runQualityChecks
+	return l, nil
 }
 
 // Close releases resources.
@@ -124,7 +135,7 @@ func (l *Loop) runIteration(ctx context.Context) error {
 
 	prompt := l.buildPrompt(task)
 
-	output, err := l.runAgent(ctx, prompt)
+	output, err := l.runAgentFn(ctx, prompt)
 	if err != nil {
 		_ = l.progress.RecordFailed(task.ID, task.Title, err.Error())
 		return fmt.Errorf("agent execution failed: %w", err)
@@ -137,7 +148,7 @@ func (l *Loop) runIteration(ctx context.Context) error {
 		return fmt.Errorf("agent reported failure: %s", result.Message)
 	}
 
-	if err := l.runQualityChecks(ctx); err != nil {
+	if err := l.runQualityChecksFn(ctx); err != nil {
 		_ = l.progress.RecordFailed(task.ID, task.Title, fmt.Sprintf("quality check failed: %s", err))
 		return fmt.Errorf("quality checks failed: %w", err)
 	}
@@ -372,7 +383,7 @@ func (l *Loop) RunSingleTask(ctx context.Context, task *Task, prompt string) *It
 	}
 	_ = l.progress.RecordStart(task.ID, task.Title)
 
-	output, err := l.runAgent(ctx, prompt)
+	output, err := l.runAgentFn(ctx, prompt)
 	result.Output = output
 	if err != nil {
 		result.Error = fmt.Sprintf("agent execution failed: %s", err)
@@ -387,7 +398,7 @@ func (l *Loop) RunSingleTask(ctx context.Context, task *Task, prompt string) *It
 		return result
 	}
 
-	if err := l.runQualityChecks(ctx); err != nil {
+	if err := l.runQualityChecksFn(ctx); err != nil {
 		result.Error = fmt.Sprintf("quality check failed: %s", err)
 		result.QualityOK = false
 		_ = l.progress.RecordFailed(task.ID, task.Title, result.Error)
