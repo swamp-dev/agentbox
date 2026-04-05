@@ -118,7 +118,7 @@ func TestRalphCmd_InvalidAgent(t *testing.T) {
 
 func TestRalphCmd_MissingPRDFile(t *testing.T) {
 	resetRalphFlags()
-	// Use claude-cli to bypass API key check (requires ~/.claude/ which exists in test env).
+	t.Setenv("ANTHROPIC_API_KEY", "test-key")
 	dir := t.TempDir()
 
 	var buf bytes.Buffer
@@ -126,7 +126,7 @@ func TestRalphCmd_MissingPRDFile(t *testing.T) {
 	rootCmd.SetErr(&buf)
 	rootCmd.SetArgs([]string{
 		"ralph",
-		"--agent", "claude-cli",
+		"--agent", "claude",
 		"--project", dir,
 		"--prd", "nonexistent.json",
 	})
@@ -143,14 +143,13 @@ func TestRalphCmd_MissingPRDFile(t *testing.T) {
 
 func TestRalphCmd_PRDFileExistsButProjectMissing(t *testing.T) {
 	resetRalphFlags()
-	// When the project directory doesn't exist, the PRD path resolution
-	// should fail because the combined path won't exist.
+	t.Setenv("ANTHROPIC_API_KEY", "test-key")
 	var buf bytes.Buffer
 	rootCmd.SetOut(&buf)
 	rootCmd.SetErr(&buf)
 	rootCmd.SetArgs([]string{
 		"ralph",
-		"--agent", "claude-cli",
+		"--agent", "claude",
 		"--project", "/nonexistent/project/path",
 		"--prd", "prd.json",
 	})
@@ -167,6 +166,7 @@ func TestRalphCmd_PRDFileExistsButProjectMissing(t *testing.T) {
 
 func TestRalphCmd_PRDPathCombination(t *testing.T) {
 	resetRalphFlags()
+	t.Setenv("ANTHROPIC_API_KEY", "test-key")
 	// Verify that the PRD path is constructed as project/prd.
 	// We test this by checking that a PRD at project/custom.json is found
 	// when --project=dir and --prd=custom.json.
@@ -178,7 +178,7 @@ func TestRalphCmd_PRDPathCombination(t *testing.T) {
 	rootCmd.SetErr(&buf)
 	rootCmd.SetArgs([]string{
 		"ralph",
-		"--agent", "claude-cli",
+		"--agent", "claude",
 		"--project", dir,
 		"--prd", "custom.json",
 	})
