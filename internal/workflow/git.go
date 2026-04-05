@@ -208,6 +208,7 @@ func (g *GitWorkflow) workDir() string {
 func (g *GitWorkflow) detectBaseBranch(ctx context.Context, repoDir string) (string, error) {
 	out, err := g.gitOutput(ctx, repoDir, "branch", "-r")
 	if err != nil {
+		g.logger.Warn("git branch -r failed, defaulting to main", "error", err)
 		return "main", nil
 	}
 	if strings.Contains(out, "origin/main") {

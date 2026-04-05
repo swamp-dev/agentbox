@@ -131,25 +131,25 @@ func (l *Loop) runIteration(ctx context.Context) error {
 	if err := l.prd.MarkTaskInProgress(task.ID); err != nil {
 		return err
 	}
-	_ = l.progress.RecordStart(task.ID, task.Title)
+	l.logProgressErr("RecordStart", l.progress.RecordStart(task.ID, task.Title))
 
 	prompt := l.buildPrompt(task)
 
 	output, err := l.runAgentFn(ctx, prompt)
 	if err != nil {
-		_ = l.progress.RecordFailed(task.ID, task.Title, err.Error())
+		l.logProgressErr("RecordFailed", l.progress.RecordFailed(task.ID, task.Title, err.Error()))
 		return fmt.Errorf("agent execution failed: %w", err)
 	}
 
 	result := l.agent.ParseOutput(output)
 
 	if !result.Success {
-		_ = l.progress.RecordFailed(task.ID, task.Title, result.Message)
+		l.logProgressErr("RecordFailed", l.progress.RecordFailed(task.ID, task.Title, result.Message))
 		return fmt.Errorf("agent reported failure: %s", result.Message)
 	}
 
 	if err := l.runQualityChecksFn(ctx); err != nil {
-		_ = l.progress.RecordFailed(task.ID, task.Title, fmt.Sprintf("quality check failed: %s", err))
+		l.logProgressErr("RecordFailed", l.progress.RecordFailed(task.ID, task.Title, fmt.Sprintf("quality check failed: %s", err)))
 		return fmt.Errorf("quality checks failed: %w", err)
 	}
 
@@ -168,7 +168,7 @@ func (l *Loop) runIteration(ctx context.Context) error {
 		return fmt.Errorf("saving PRD: %w", err)
 	}
 
-	_ = l.progress.RecordComplete(task.ID, task.Title, "Task completed successfully", learnings)
+	l.logProgressErr("RecordComplete", l.progress.RecordComplete(task.ID, task.Title, "Task completed successfully", learnings))
 
 	l.logger.Info("iteration completed",
 		"iteration", l.iteration,
@@ -337,6 +337,13 @@ func (l *Loop) commitChanges(ctx context.Context, task *Task) error {
 	return nil
 }
 
+// logProgressErr logs a warning if a progress tracking call fails.
+func (l *Loop) logProgressErr(op string, err error) {
+	if err != nil {
+		l.logger.Warn("failed to record progress", "op", op, "error", err)
+	}
+}
+
 // extractLearnings attempts to extract learnings from the agent output.
 func (l *Loop) extractLearnings(output string) []string {
 	var learnings []string
@@ -381,27 +388,27 @@ func (l *Loop) RunSingleTask(ctx context.Context, task *Task, prompt string) *It
 		result.Error = err.Error()
 		return result
 	}
-	_ = l.progress.RecordStart(task.ID, task.Title)
+	l.logProgressErr("RecordStart", l.progress.RecordStart(task.ID, task.Title))
 
 	output, err := l.runAgentFn(ctx, prompt)
 	result.Output = output
 	if err != nil {
 		result.Error = fmt.Sprintf("agent execution failed: %s", err)
-		_ = l.progress.RecordFailed(task.ID, task.Title, result.Error)
+		l.logProgressErr("RecordFailed", l.progress.RecordFailed(task.ID, task.Title, result.Error))
 		return result
 	}
 
 	agentResult := l.agent.ParseOutput(output)
 	if !agentResult.Success {
 		result.Error = fmt.Sprintf("agent reported failure: %s", agentResult.Message)
-		_ = l.progress.RecordFailed(task.ID, task.Title, result.Error)
+		l.logProgressErr("RecordFailed", l.progress.RecordFailed(task.ID, task.Title, result.Error))
 		return result
 	}
 
 	if err := l.runQualityChecksFn(ctx); err != nil {
 		result.Error = fmt.Sprintf("quality check failed: %s", err)
 		result.QualityOK = false
-		_ = l.progress.RecordFailed(task.ID, task.Title, result.Error)
+		l.logProgressErr("RecordFailed", l.progress.RecordFailed(task.ID, task.Title, result.Error))
 		return result
 	}
 	result.QualityOK = true
@@ -415,8 +422,13 @@ func (l *Loop) RunSingleTask(ctx context.Context, task *Task, prompt string) *It
 		return result
 	}
 
-	_ = l.prd.Save(l.projectPath + "/" + l.cfg.Ralph.PRDFile)
-	_ = l.progress.RecordComplete(task.ID, task.Title, "Task completed successfully", result.Learnings)
+	if saveErr := l.prd.Save(l.projectPath + "/" + l.cfg.Ralph.PRDFile); saveErr != nil {
+		l.logProgressErr("save PRD", saveErr)
+		result.Error = fmt.Sprintf("failed to save PRD: %s", saveErr)
+		result.Success = false
+		return result
+	}
+	l.logProgressErr("RecordComplete", l.progress.RecordComplete(task.ID, task.Title, "Task completed successfully", result.Learnings))
 
 	return result
 }
