@@ -779,6 +779,23 @@ func TestRunCompletesWhenAllTasksDone(t *testing.T) {
 	}
 }
 
+func TestRunSucceedsWhenCompleteAtMaxIterations(t *testing.T) {
+	// One task with max_iterations=1: task completes on the final iteration.
+	// Ralph should exit successfully, not report "max iterations reached".
+	tasks := []Task{
+		{ID: "task-1", Title: "Only task", Description: "Do it", Status: "pending"},
+	}
+	loop := newTestableLoop(t, tasks, 1)
+
+	err := loop.Run(context.Background())
+	if err != nil {
+		t.Fatalf("Run() should succeed when PRD is complete, got error: %v", err)
+	}
+	if !loop.prd.IsComplete() {
+		t.Error("expected PRD to be complete after Run()")
+	}
+}
+
 func TestRunStopsAtMaxIterations(t *testing.T) {
 	// Two tasks but max 1 iteration — should fail with max iterations reached.
 	tasks := []Task{
