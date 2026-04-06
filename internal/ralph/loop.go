@@ -14,6 +14,7 @@ import (
 	"github.com/swamp-dev/agentbox/internal/agent"
 	"github.com/swamp-dev/agentbox/internal/config"
 	"github.com/swamp-dev/agentbox/internal/container"
+	"github.com/swamp-dev/agentbox/internal/store"
 )
 
 // randomSuffix generates a random hex string for unique container names.
@@ -30,6 +31,7 @@ type Loop struct {
 	progress  *Progress
 	agent     agent.Agent
 	container *container.Manager
+	store     *store.Store
 	logger    *slog.Logger
 
 	projectPath string
@@ -66,12 +68,26 @@ func NewLoop(cfg *config.Config, projectPath string, logger *slog.Logger) (*Loop
 		return nil, fmt.Errorf("loading progress: %w", err)
 	}
 
+	// Ensure .agentbox directory exists for session persistence.
+	agentboxDir := filepath.Join(projectPath, ".agentbox")
+	if err := os.MkdirAll(agentboxDir, 0755); err != nil {
+		return nil, fmt.Errorf("creating .agentbox directory: %w", err)
+	}
+
+	// Open SQLite store so MCP status tools can find ralph sessions.
+	dbPath := filepath.Join(agentboxDir, "agentbox.db")
+	s, err := store.Open(dbPath)
+	if err != nil {
+		return nil, fmt.Errorf("opening store: %w", err)
+	}
+
 	l := &Loop{
 		cfg:         cfg,
 		prd:         prd,
 		progress:    progress,
 		agent:       ag,
 		container:   cm,
+		store:       s,
 		logger:      logger,
 		projectPath: projectPath,
 	}
@@ -82,6 +98,9 @@ func NewLoop(cfg *config.Config, projectPath string, logger *slog.Logger) (*Loop
 
 // Close releases resources.
 func (l *Loop) Close() error {
+	if l.store != nil {
+		l.store.Close()
+	}
 	return l.container.Close()
 }
 
