@@ -15,6 +15,48 @@ import (
 	"github.com/swamp-dev/agentbox/internal/config"
 )
 
+func TestNewLoopCreatesAgentboxStore(t *testing.T) {
+	dir := t.TempDir()
+
+	// Create minimal PRD file.
+	prdContent := `{"name":"test","tasks":[{"id":"1","title":"task one","description":"do it","status":"pending"}]}`
+	if err := os.WriteFile(filepath.Join(dir, "prd.json"), []byte(prdContent), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := &config.Config{
+		Agent: config.AgentConfig{Name: "claude"},
+		Ralph: config.RalphConfig{
+			PRDFile:       "prd.json",
+			ProgressFile:  "progress.txt",
+			MaxIterations: 1,
+			StopSignal:    "<promise>COMPLETE</promise>",
+		},
+	}
+
+	loop, err := NewLoop(cfg, dir, slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError})))
+	if err != nil {
+		t.Fatalf("NewLoop() error: %v", err)
+	}
+	defer loop.Close()
+
+	// .agentbox/ directory should exist.
+	agentboxDir := filepath.Join(dir, ".agentbox")
+	info, err := os.Stat(agentboxDir)
+	if err != nil {
+		t.Fatalf(".agentbox directory not created: %v", err)
+	}
+	if !info.IsDir() {
+		t.Fatal(".agentbox is not a directory")
+	}
+
+	// agentbox.db should exist inside it.
+	dbPath := filepath.Join(agentboxDir, "agentbox.db")
+	if _, err := os.Stat(dbPath); err != nil {
+		t.Fatalf("agentbox.db not created: %v", err)
+	}
+}
+
 func TestValidateQualityCheckCommand(t *testing.T) {
 	tests := []struct {
 		name    string

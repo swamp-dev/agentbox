@@ -23,6 +23,22 @@ func TestOpen(t *testing.T) {
 	}
 }
 
+func TestOpenMissingDirectory(t *testing.T) {
+	// Opening a store in a nonexistent directory should return a clear error
+	// about the missing directory, not a misleading SQLite error.
+	_, err := Open("/tmp/nonexistent-dir-abc123/store.db")
+	if err == nil {
+		t.Fatal("expected error when directory does not exist")
+	}
+	if !strings.Contains(err.Error(), "does not exist") {
+		t.Errorf("error should mention directory does not exist, got: %v", err)
+	}
+	// Must NOT contain misleading "out of memory" text
+	if strings.Contains(err.Error(), "out of memory") {
+		t.Errorf("error should not mention 'out of memory', got: %v", err)
+	}
+}
+
 func TestSchemaVersion(t *testing.T) {
 	s := openTestStore(t)
 	var version int
