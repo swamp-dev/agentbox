@@ -796,6 +796,27 @@ func TestRunSucceedsWhenCompleteAtMaxIterations(t *testing.T) {
 	}
 }
 
+func TestRunSucceedsWhenMultipleTasksCompleteAtMaxIterations(t *testing.T) {
+	// Three tasks with max_iterations=3: all complete exactly at the limit.
+	tasks := []Task{
+		{ID: "task-1", Title: "First", Description: "first", Status: "pending"},
+		{ID: "task-2", Title: "Second", Description: "second", Status: "pending"},
+		{ID: "task-3", Title: "Third", Description: "third", Status: "pending"},
+	}
+	loop := newTestableLoop(t, tasks, 3)
+
+	err := loop.Run(context.Background())
+	if err != nil {
+		t.Fatalf("Run() should succeed when all tasks complete at max_iterations, got error: %v", err)
+	}
+	if !loop.prd.IsComplete() {
+		t.Error("expected PRD to be complete after Run()")
+	}
+	if loop.iteration-1 != 3 {
+		t.Errorf("expected 3 iterations, got %d", loop.iteration-1)
+	}
+}
+
 func TestRunStopsAtMaxIterations(t *testing.T) {
 	// Two tasks but max 1 iteration — should fail with max iterations reached.
 	tasks := []Task{
