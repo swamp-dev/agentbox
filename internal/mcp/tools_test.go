@@ -272,7 +272,8 @@ func TestToolCallAgentboxRun(t *testing.T) {
 }
 
 func TestToolCallAgentboxRalphStart(t *testing.T) {
-	input := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"agentbox_ralph_start","arguments":{"project_dir":"/tmp/nonexistent"}}}` + "\n"
+	// Nonexistent project_dir should return a tool-level error, not a JSON-RPC error.
+	input := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"agentbox_ralph_start","arguments":{"project_dir":"/tmp/does-not-exist-agentbox-test"}}}` + "\n"
 	stdin := strings.NewReader(input)
 	var stdout bytes.Buffer
 
@@ -287,11 +288,21 @@ func TestToolCallAgentboxRalphStart(t *testing.T) {
 	}
 	if resp.Error != nil {
 		t.Fatalf("unexpected JSON-RPC error: %v", resp.Error)
+	}
+
+	resultJSON, _ := json.Marshal(resp.Result)
+	var callResult ToolCallResult
+	if err := json.Unmarshal(resultJSON, &callResult); err != nil {
+		t.Fatalf("unmarshal result: %v", err)
+	}
+	if !callResult.IsError {
+		t.Error("expected isError=true for nonexistent project_dir")
 	}
 }
 
 func TestToolCallAgentboxSprintStart(t *testing.T) {
-	input := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"agentbox_sprint_start","arguments":{"project_dir":"/tmp/nonexistent"}}}` + "\n"
+	// Nonexistent project_dir should return a tool-level error, not a JSON-RPC error.
+	input := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"agentbox_sprint_start","arguments":{"project_dir":"/tmp/does-not-exist-agentbox-test"}}}` + "\n"
 	stdin := strings.NewReader(input)
 	var stdout bytes.Buffer
 
@@ -306,6 +317,15 @@ func TestToolCallAgentboxSprintStart(t *testing.T) {
 	}
 	if resp.Error != nil {
 		t.Fatalf("unexpected JSON-RPC error: %v", resp.Error)
+	}
+
+	resultJSON, _ := json.Marshal(resp.Result)
+	var callResult ToolCallResult
+	if err := json.Unmarshal(resultJSON, &callResult); err != nil {
+		t.Fatalf("unmarshal result: %v", err)
+	}
+	if !callResult.IsError {
+		t.Error("expected isError=true for nonexistent project_dir")
 	}
 }
 
