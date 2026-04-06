@@ -68,6 +68,8 @@ func (a *ClaudeCLIAgent) ParseOutput(output string) *AgentOutput {
 		result.Success = false
 	}
 
+	result.Completed = result.Success || result.Completed
+
 	result.Files = extractFilePaths(output)
 
 	return result

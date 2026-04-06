@@ -14,6 +14,7 @@ import (
 	"github.com/swamp-dev/agentbox/internal/agent"
 	"github.com/swamp-dev/agentbox/internal/config"
 	"github.com/swamp-dev/agentbox/internal/container"
+	"github.com/swamp-dev/agentbox/internal/store"
 )
 
 // randomSuffix generates a random hex string for unique container names.
@@ -30,6 +31,8 @@ type Loop struct {
 	progress  *Progress
 	agent     agent.Agent
 	container *container.Manager
+	store     *store.Store
+	sessionID int64
 	logger    *slog.Logger
 
 	projectPath string
@@ -66,12 +69,36 @@ func NewLoop(cfg *config.Config, projectPath string, logger *slog.Logger) (*Loop
 		return nil, fmt.Errorf("loading progress: %w", err)
 	}
 
+	// Ensure .agentbox directory exists for session persistence.
+	agentboxDir := filepath.Join(projectPath, ".agentbox")
+	if err := os.MkdirAll(agentboxDir, 0755); err != nil {
+		return nil, fmt.Errorf("creating .agentbox directory: %w", err)
+	}
+
+	// Open SQLite store so MCP status tools can find ralph sessions.
+	dbPath := filepath.Join(agentboxDir, "agentbox.db")
+	s, err := store.Open(dbPath)
+	if err != nil {
+		return nil, fmt.Errorf("opening store: %w", err)
+	}
+
+	// Create a session record so MCP status tools can query ralph runs.
+	cfgJSON := fmt.Sprintf(`{"agent":%q,"prd_file":%q,"max_iterations":%d}`,
+		cfg.Agent.Name, cfg.Ralph.PRDFile, cfg.Ralph.MaxIterations)
+	sessionID, err := s.CreateSession("", "", cfgJSON)
+	if err != nil {
+		s.Close()
+		return nil, fmt.Errorf("creating session: %w", err)
+	}
+
 	l := &Loop{
 		cfg:         cfg,
 		prd:         prd,
 		progress:    progress,
 		agent:       ag,
 		container:   cm,
+		store:       s,
+		sessionID:   sessionID,
 		logger:      logger,
 		projectPath: projectPath,
 	}
@@ -82,7 +109,15 @@ func NewLoop(cfg *config.Config, projectPath string, logger *slog.Logger) (*Loop
 
 // Close releases resources.
 func (l *Loop) Close() error {
-	return l.container.Close()
+	var storeErr error
+	if l.store != nil {
+		storeErr = l.store.Close()
+	}
+	containerErr := l.container.Close()
+	if storeErr != nil {
+		return storeErr
+	}
+	return containerErr
 }
 
 // Run executes the Ralph loop until completion or max iterations.

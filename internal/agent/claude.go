@@ -72,6 +72,11 @@ func (a *ClaudeAgent) ParseOutput(output string) *AgentOutput {
 		result.Success = false
 	}
 
+	// A successful run is considered complete even without the explicit stop
+	// signal. The stop signal is a strong indicator within multi-step PRD loops,
+	// but for single-run contexts the absence of errors means the agent finished.
+	result.Completed = result.Success || result.Completed
+
 	result.Files = extractFilePaths(output)
 
 	return result

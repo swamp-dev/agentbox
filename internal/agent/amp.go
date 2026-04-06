@@ -70,5 +70,7 @@ func (a *AmpAgent) ParseOutput(output string) *AgentOutput {
 		result.Success = false
 	}
 
+	result.Completed = result.Success || result.Completed
+
 	return result
 }

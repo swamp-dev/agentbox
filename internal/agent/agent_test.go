@@ -115,15 +115,21 @@ func TestClaudeAgentParseOutput(t *testing.T) {
 			success:   true,
 		},
 		{
-			name:      "incomplete task",
-			output:    "Still working on it",
-			completed: false,
+			name:      "successful without stop signal",
+			output:    "I've completed the changes to the codebase",
+			completed: true,
 			success:   true,
 		},
 		{
 			name:      "error in output",
 			output:    "Error: something went wrong",
 			completed: false,
+			success:   false,
+		},
+		{
+			name:      "completed with error and stop signal",
+			output:    "Error: minor issue <promise>COMPLETE</promise>",
+			completed: true,
 			success:   false,
 		},
 	}
@@ -361,15 +367,15 @@ func TestAmpAgentParseOutput(t *testing.T) {
 		success   bool
 	}{
 		{
-			name:      "completed task",
+			name:      "completed task with stop signal",
 			output:    "Done <promise>COMPLETE</promise>",
 			completed: true,
 			success:   true,
 		},
 		{
-			name:      "incomplete task",
+			name:      "successful without stop signal",
 			output:    "Working on it",
-			completed: false,
+			completed: true,
 			success:   true,
 		},
 		{
@@ -415,15 +421,15 @@ func TestAiderAgentParseOutput(t *testing.T) {
 		success   bool
 	}{
 		{
-			name:      "completed task",
+			name:      "completed task with stop signal",
 			output:    "Changes applied <promise>COMPLETE</promise>",
 			completed: true,
 			success:   true,
 		},
 		{
-			name:      "incomplete task",
+			name:      "successful without stop signal",
 			output:    "Analyzing code",
-			completed: false,
+			completed: true,
 			success:   true,
 		},
 		{
@@ -699,21 +705,27 @@ func TestClaudeCLIAgentParseOutput(t *testing.T) {
 		success   bool
 	}{
 		{
-			name:      "completed task",
+			name:      "completed task with stop signal",
 			output:    "Task done <promise>COMPLETE</promise>",
 			completed: true,
 			success:   true,
 		},
 		{
-			name:      "incomplete task",
+			name:      "successful without stop signal",
 			output:    "Still working on it",
-			completed: false,
+			completed: true,
 			success:   true,
 		},
 		{
 			name:      "error in output",
 			output:    "Error: something went wrong",
 			completed: false,
+			success:   false,
+		},
+		{
+			name:      "completed with error and stop signal",
+			output:    "Error: minor issue <promise>COMPLETE</promise>",
+			completed: true,
 			success:   false,
 		},
 	}

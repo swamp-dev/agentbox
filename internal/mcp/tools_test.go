@@ -585,6 +585,47 @@ func TestHandleSprintStartNetworkPassthrough(t *testing.T) {
 	}
 }
 
+func TestHandleStatusMissingStoreMessage(t *testing.T) {
+	h := NewToolHandler(nil)
+
+	// Point at a directory with no .agentbox/ — should get a clear message
+	args, _ := json.Marshal(map[string]string{"project_dir": "/tmp/nonexistent-project-xyz"})
+	result := h.Call("agentbox_status", args)
+
+	if result.IsError {
+		t.Fatal("agentbox_status should return graceful text, not isError=true")
+	}
+	text := result.Content[0].Text
+	if strings.Contains(text, "out of memory") {
+		t.Errorf("error message should not mention 'out of memory', got: %s", text)
+	}
+	if !strings.Contains(text, "does not exist") {
+		t.Errorf("error message should mention directory does not exist, got: %s", text)
+	}
+}
+
+func TestHandleJournalMissingStoreMessage(t *testing.T) {
+	h := NewToolHandler(nil)
+
+	// Point at a directory with no .agentbox/ — should get a clear error
+	args, _ := json.Marshal(map[string]interface{}{
+		"session_id":  "1",
+		"project_dir": "/tmp/nonexistent-project-xyz",
+	})
+	result := h.Call("agentbox_journal", args)
+
+	if !result.IsError {
+		t.Fatal("agentbox_journal should return isError=true when store is missing")
+	}
+	text := result.Content[0].Text
+	if strings.Contains(text, "out of memory") {
+		t.Errorf("error message should not mention 'out of memory', got: %s", text)
+	}
+	if !strings.Contains(text, "does not exist") {
+		t.Errorf("error message should mention directory does not exist, got: %s", text)
+	}
+}
+
 // --- helpers ---
 
 func findTool(tools []ToolDefinition, name string) *ToolDefinition {
