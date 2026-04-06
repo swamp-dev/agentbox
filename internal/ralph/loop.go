@@ -32,6 +32,7 @@ type Loop struct {
 	agent     agent.Agent
 	container *container.Manager
 	store     *store.Store
+	sessionID int64
 	logger    *slog.Logger
 
 	projectPath string
@@ -81,6 +82,15 @@ func NewLoop(cfg *config.Config, projectPath string, logger *slog.Logger) (*Loop
 		return nil, fmt.Errorf("opening store: %w", err)
 	}
 
+	// Create a session record so MCP status tools can query ralph runs.
+	cfgJSON := fmt.Sprintf(`{"agent":%q,"prd_file":%q,"max_iterations":%d}`,
+		cfg.Agent.Name, cfg.Ralph.PRDFile, cfg.Ralph.MaxIterations)
+	sessionID, err := s.CreateSession("", "", cfgJSON)
+	if err != nil {
+		s.Close()
+		return nil, fmt.Errorf("creating session: %w", err)
+	}
+
 	l := &Loop{
 		cfg:         cfg,
 		prd:         prd,
@@ -88,6 +98,7 @@ func NewLoop(cfg *config.Config, projectPath string, logger *slog.Logger) (*Loop
 		agent:       ag,
 		container:   cm,
 		store:       s,
+		sessionID:   sessionID,
 		logger:      logger,
 		projectPath: projectPath,
 	}
@@ -98,10 +109,15 @@ func NewLoop(cfg *config.Config, projectPath string, logger *slog.Logger) (*Loop
 
 // Close releases resources.
 func (l *Loop) Close() error {
+	var storeErr error
 	if l.store != nil {
-		l.store.Close()
+		storeErr = l.store.Close()
 	}
-	return l.container.Close()
+	containerErr := l.container.Close()
+	if storeErr != nil {
+		return storeErr
+	}
+	return containerErr
 }
 
 // Run executes the Ralph loop until completion or max iterations.

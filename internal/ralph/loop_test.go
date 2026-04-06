@@ -13,6 +13,7 @@ import (
 
 	"github.com/swamp-dev/agentbox/internal/agent"
 	"github.com/swamp-dev/agentbox/internal/config"
+	"github.com/swamp-dev/agentbox/internal/store"
 )
 
 func TestNewLoopCreatesAgentboxStore(t *testing.T) {
@@ -54,6 +55,24 @@ func TestNewLoopCreatesAgentboxStore(t *testing.T) {
 	dbPath := filepath.Join(agentboxDir, "agentbox.db")
 	if _, err := os.Stat(dbPath); err != nil {
 		t.Fatalf("agentbox.db not created: %v", err)
+	}
+
+	// The store should contain a session record that MCP tools can query.
+	s, err := store.Open(dbPath)
+	if err != nil {
+		t.Fatalf("opening store: %v", err)
+	}
+	defer s.Close()
+
+	sess, err := s.LatestSession()
+	if err != nil {
+		t.Fatalf("LatestSession() should find ralph session, got error: %v", err)
+	}
+	if sess.ID == 0 {
+		t.Fatal("session ID should be non-zero")
+	}
+	if sess.ConfigJSON == "" {
+		t.Fatal("session should have config JSON")
 	}
 }
 

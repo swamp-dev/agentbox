@@ -126,6 +126,12 @@ func TestClaudeAgentParseOutput(t *testing.T) {
 			completed: false,
 			success:   false,
 		},
+		{
+			name:      "completed with error and stop signal",
+			output:    "Error: minor issue <promise>COMPLETE</promise>",
+			completed: true,
+			success:   false,
+		},
 	}
 
 	for _, tt := range tests {
@@ -714,6 +720,12 @@ func TestClaudeCLIAgentParseOutput(t *testing.T) {
 			name:      "error in output",
 			output:    "Error: something went wrong",
 			completed: false,
+			success:   false,
+		},
+		{
+			name:      "completed with error and stop signal",
+			output:    "Error: minor issue <promise>COMPLETE</promise>",
+			completed: true,
 			success:   false,
 		},
 	}
