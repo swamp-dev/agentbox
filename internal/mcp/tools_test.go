@@ -585,6 +585,56 @@ func TestHandleSprintStartNetworkPassthrough(t *testing.T) {
 	}
 }
 
+func TestHandleRalphStartNonexistentProjectDir(t *testing.T) {
+	h := NewToolHandler(nil)
+
+	args, _ := json.Marshal(map[string]string{"project_dir": "/tmp/nonexistent-project-xyz-50"})
+	result := h.Call("agentbox_ralph_start", args)
+
+	if !result.IsError {
+		t.Fatal("expected isError=true for nonexistent project_dir")
+	}
+	text := result.Content[0].Text
+	if !strings.Contains(text, "does not exist") {
+		t.Errorf("error should mention directory does not exist, got: %s", text)
+	}
+}
+
+func TestHandleSprintStartNonexistentProjectDir(t *testing.T) {
+	h := NewToolHandler(nil)
+
+	args, _ := json.Marshal(map[string]string{"project_dir": "/tmp/nonexistent-project-xyz-50"})
+	result := h.Call("agentbox_sprint_start", args)
+
+	if !result.IsError {
+		t.Fatal("expected isError=true for nonexistent project_dir")
+	}
+	text := result.Content[0].Text
+	if !strings.Contains(text, "does not exist") {
+		t.Errorf("error should mention directory does not exist, got: %s", text)
+	}
+}
+
+func TestHandleRunNonexistentProjectDir(t *testing.T) {
+	h := NewToolHandler(nil)
+	t.Setenv("ANTHROPIC_API_KEY", "test-key")
+
+	args, _ := json.Marshal(map[string]interface{}{
+		"project_dir": "/tmp/nonexistent-project-xyz-50",
+		"agent":       "claude",
+		"prompt":      "test",
+	})
+	result := h.Call("agentbox_run", args)
+
+	if !result.IsError {
+		t.Fatal("expected isError=true for nonexistent project_dir")
+	}
+	text := result.Content[0].Text
+	if !strings.Contains(text, "does not exist") {
+		t.Errorf("error should mention directory does not exist, got: %s", text)
+	}
+}
+
 func TestHandleStatusMissingStoreMessage(t *testing.T) {
 	h := NewToolHandler(nil)
 
