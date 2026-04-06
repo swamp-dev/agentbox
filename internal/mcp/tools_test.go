@@ -564,14 +564,17 @@ func TestEvictSessionsMixed(t *testing.T) {
 func TestHandleSprintStartNetworkPassthrough(t *testing.T) {
 	h := NewToolHandler(nil)
 
+	// Use a real directory so project_dir validation passes.
+	dir := t.TempDir()
+
 	args, _ := json.Marshal(map[string]interface{}{
-		"project_dir":       "/tmp/nonexistent",
+		"project_dir":       dir,
 		"network":           "restricted",
 		"allowed_endpoints": []string{"api.anthropic.com:443"},
 	})
 	result := h.Call("agentbox_sprint_start", args)
 
-	// Sprint start is async — should return a session ID even if the dir doesn't exist
+	// Sprint start is async — should return a session ID for a valid directory
 	if result.IsError {
 		t.Fatalf("unexpected error: %s", result.Content[0].Text)
 	}
