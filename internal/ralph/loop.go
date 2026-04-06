@@ -146,6 +146,12 @@ func (l *Loop) Run(ctx context.Context) error {
 		}
 	}
 
+	// Check if all tasks completed on the final iteration.
+	if l.prd.IsComplete() {
+		l.logger.Info("all tasks completed", "iterations", l.cfg.Ralph.MaxIterations)
+		return nil
+	}
+
 	l.logger.Warn("max iterations reached", "max", l.cfg.Ralph.MaxIterations)
 	return fmt.Errorf("max iterations (%d) reached", l.cfg.Ralph.MaxIterations)
 }
