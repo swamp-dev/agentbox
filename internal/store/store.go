@@ -6,6 +6,8 @@ import (
 	_ "embed"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -25,6 +27,19 @@ type Store struct {
 
 // Open opens or creates a SQLite database at path and runs migrations.
 func Open(path string) (*Store, error) {
+	// Check that the parent directory exists before letting SQLite attempt to
+	// open the file. Without this, SQLite returns a confusing SQLITE_CANTOPEN
+	// error that gets rendered as "out of memory (14)".
+	if path != ":memory:" {
+		dir := filepath.Dir(path)
+		if _, err := os.Stat(dir); err != nil {
+			if os.IsNotExist(err) {
+				return nil, fmt.Errorf("store directory does not exist: %s", dir)
+			}
+			return nil, fmt.Errorf("checking store directory: %w", err)
+		}
+	}
+
 	db, err := sql.Open("sqlite", path)
 	if err != nil {
 		return nil, fmt.Errorf("opening database: %w", err)
