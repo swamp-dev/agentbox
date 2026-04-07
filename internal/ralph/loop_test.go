@@ -951,6 +951,9 @@ func TestRunIterationAgentFailureIncludesOutput(t *testing.T) {
 	if !strings.Contains(contents, "Permission denied") {
 		t.Errorf("progress file should contain agent output, got:\n%s", contents)
 	}
+	if !strings.Contains(contents, "container exited with code 1") {
+		t.Errorf("progress file should contain error message, got:\n%s", contents)
+	}
 }
 
 func TestRunIterationAgentReportsFailure(t *testing.T) {
