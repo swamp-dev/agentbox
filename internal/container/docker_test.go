@@ -6,6 +6,7 @@ import (
 	"context"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -261,6 +262,99 @@ func TestConfigToContainerConfigClaudeCLIMount(t *testing.T) {
 				t.Errorf("MountClaudeConfig = %v, want %v", containerCfg.MountClaudeConfig, tt.want)
 			}
 		})
+	}
+}
+
+func TestWrapCmdForAgent(t *testing.T) {
+	tests := []struct {
+		name string
+		cmd  []string
+		want string // substring that must appear in the wrapped shell command
+	}{
+		{
+			name: "bash -c command",
+			cmd:  []string{"bash", "-c", "claude --dangerously-skip-permissions -p 'hello'"},
+			want: "claude --dangerously-skip-permissions",
+		},
+		{
+			name: "direct command",
+			cmd:  []string{"amp", "--message", "fix bug"},
+			want: "amp",
+		},
+		{
+			name: "single command",
+			cmd:  []string{"echo", "hello"},
+			want: "echo",
+		},
+		{
+			name: "newline in argument does not break quoting",
+			cmd:  []string{"amp", "--message", "fix bug\nrm -rf /"},
+			want: "fix bug",
+		},
+		{
+			name: "bash -c with 4 args",
+			cmd:  []string{"bash", "-c", "echo hello", "agentbox"},
+			want: "echo hello",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			wrapped := wrapCmdForAgent(tt.cmd)
+			// Should always be bash -c <script>
+			if len(wrapped) != 3 || wrapped[0] != "bash" || wrapped[1] != "-c" {
+				t.Fatalf("expected [bash -c ...], got %v", wrapped)
+			}
+			script := wrapped[2]
+			if !strings.Contains(script, "chown -R agent:agent /workspace") {
+				t.Errorf("expected chown in script, got: %s", script)
+			}
+			if !strings.Contains(script, tt.want) {
+				t.Errorf("expected %q in script, got: %s", tt.want, script)
+			}
+			// For direct commands (not bash -c), all arguments should be
+			// single-quoted to prevent injection via shell metacharacters.
+			if tt.name == "newline in argument does not break quoting" {
+				// The newline-containing arg must be inside single quotes.
+				if !strings.Contains(script, "'fix bug") {
+					t.Errorf("newline arg should be single-quoted in script: %s", script)
+				}
+			}
+		})
+	}
+}
+
+func TestRunWritableWorkspace(t *testing.T) {
+	if testing.Short() || !dockerAvailable() {
+		t.Skip("skipping: requires Docker")
+	}
+
+	cm, err := NewManager()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cm.Close()
+
+	cfg := &ContainerConfig{
+		Name:        "agentbox-test-writable",
+		Image:       "agentbox/full:latest",
+		WorkDir:     "/workspace",
+		ProjectPath: t.TempDir(),
+		Cmd:         []string{"bash", "-c", "touch /workspace/testfile && echo ok"},
+		Network:     "none",
+	}
+
+	output, err := cm.Run(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("Run() error = %v\nOutput: %s", err, output)
+	}
+	if !strings.Contains(output, "ok") {
+		t.Errorf("expected 'ok' in output, got %q", output)
+	}
+
+	// Verify the file was actually created on the host.
+	if _, err := os.Stat(filepath.Join(cfg.ProjectPath, "testfile")); err != nil {
+		t.Errorf("testfile not created on host: %v", err)
 	}
 }
 

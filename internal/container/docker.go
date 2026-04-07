@@ -90,6 +90,36 @@ func ImageName(imageType string) string {
 	}
 }
 
+// wrapCmdForAgent wraps a command to run as root initially, chown /workspace to
+// the agent user (UID 1000), then exec the original command as the agent user.
+// This is needed because bind-mounted host directories retain host ownership
+// (typically root), making them unwritable by the container's agent user.
+func wrapCmdForAgent(cmd []string) []string {
+	// If the command is already "bash -c <script>", extract the script and
+	// wrap it directly to avoid nested quoting issues.
+	var inner string
+	if len(cmd) >= 3 && cmd[0] == "bash" && cmd[1] == "-c" {
+		inner = cmd[2]
+	} else {
+		// For direct commands like ["amp", "--message", "..."], quote every
+		// argument unconditionally to prevent injection via newlines or other
+		// shell metacharacters in prompts.
+		quoted := make([]string, len(cmd))
+		for i, arg := range cmd {
+			quoted[i] = "'" + strings.ReplaceAll(arg, "'", "'\\''") + "'"
+		}
+		inner = strings.Join(quoted, " ")
+	}
+
+	script := fmt.Sprintf("chown -R agent:agent /workspace && exec su -s /bin/bash -c %s agent", shellQuoteForSu(inner))
+	return []string{"bash", "-c", script}
+}
+
+// shellQuoteForSu wraps a string in single quotes for passing to su -c.
+func shellQuoteForSu(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'"
+}
+
 // Create builds and starts a new container with the given configuration.
 func (m *Manager) Create(ctx context.Context, cfg *ContainerConfig) (string, error) {
 	mounts := []mount.Mount{
@@ -137,9 +167,10 @@ func (m *Manager) Create(ctx context.Context, cfg *ContainerConfig) (string, err
 
 	containerCfg := &container.Config{
 		Image:      cfg.Image,
-		Cmd:        cfg.Cmd,
+		Cmd:        wrapCmdForAgent(cfg.Cmd),
 		Env:        cfg.Env,
 		WorkingDir: "/workspace",
+		User:       "root",
 		Tty:        cfg.Interactive,
 		OpenStdin:  cfg.Interactive,
 	}
