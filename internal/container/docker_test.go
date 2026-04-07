@@ -6,6 +6,7 @@ import (
 	"context"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -285,6 +286,16 @@ func TestWrapCmdForAgent(t *testing.T) {
 			cmd:  []string{"echo", "hello"},
 			want: "echo",
 		},
+		{
+			name: "newline in argument does not break quoting",
+			cmd:  []string{"amp", "--message", "fix bug\nrm -rf /"},
+			want: "fix bug",
+		},
+		{
+			name: "bash -c with 4 args",
+			cmd:  []string{"bash", "-c", "echo hello", "agentbox"},
+			want: "echo hello",
+		},
 	}
 
 	for _, tt := range tests {
@@ -300,6 +311,14 @@ func TestWrapCmdForAgent(t *testing.T) {
 			}
 			if !strings.Contains(script, tt.want) {
 				t.Errorf("expected %q in script, got: %s", tt.want, script)
+			}
+			// For direct commands (not bash -c), all arguments should be
+			// single-quoted to prevent injection via shell metacharacters.
+			if tt.name == "newline in argument does not break quoting" {
+				// The newline-containing arg must be inside single quotes.
+				if !strings.Contains(script, "'fix bug") {
+					t.Errorf("newline arg should be single-quoted in script: %s", script)
+				}
 			}
 		})
 	}
@@ -331,6 +350,11 @@ func TestRunWritableWorkspace(t *testing.T) {
 	}
 	if !strings.Contains(output, "ok") {
 		t.Errorf("expected 'ok' in output, got %q", output)
+	}
+
+	// Verify the file was actually created on the host.
+	if _, err := os.Stat(filepath.Join(cfg.ProjectPath, "testfile")); err != nil {
+		t.Errorf("testfile not created on host: %v", err)
 	}
 }
 

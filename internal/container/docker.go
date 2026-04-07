@@ -98,17 +98,15 @@ func wrapCmdForAgent(cmd []string) []string {
 	// If the command is already "bash -c <script>", extract the script and
 	// wrap it directly to avoid nested quoting issues.
 	var inner string
-	if len(cmd) == 3 && cmd[0] == "bash" && cmd[1] == "-c" {
+	if len(cmd) >= 3 && cmd[0] == "bash" && cmd[1] == "-c" {
 		inner = cmd[2]
 	} else {
-		// For direct commands like ["amp", "--message", "..."], join them.
+		// For direct commands like ["amp", "--message", "..."], quote every
+		// argument unconditionally to prevent injection via newlines or other
+		// shell metacharacters in prompts.
 		quoted := make([]string, len(cmd))
 		for i, arg := range cmd {
-			if strings.ContainsAny(arg, " \t'\"\\$`") {
-				quoted[i] = "'" + strings.ReplaceAll(arg, "'", "'\\''") + "'"
-			} else {
-				quoted[i] = arg
-			}
+			quoted[i] = "'" + strings.ReplaceAll(arg, "'", "'\\''") + "'"
 		}
 		inner = strings.Join(quoted, " ")
 	}
