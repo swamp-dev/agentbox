@@ -178,7 +178,12 @@ func (l *Loop) runIteration(ctx context.Context) error {
 
 	output, err := l.runAgentFn(ctx, prompt)
 	if err != nil {
-		l.logProgressErr("RecordFailed", l.progress.RecordFailed(task.ID, task.Title, err.Error()))
+		failMsg := err.Error()
+		if output != "" {
+			l.logger.Warn("agent output before failure", "task", task.ID, "output", truncateString(output, maxLogOutput))
+			failMsg = fmt.Sprintf("%s\n\nAgent output:\n%s", failMsg, truncateString(output, maxFailMsgOutput))
+		}
+		l.logProgressErr("RecordFailed", l.progress.RecordFailed(task.ID, task.Title, failMsg))
 		return fmt.Errorf("agent execution failed: %w", err)
 	}
 
@@ -378,6 +383,22 @@ func (l *Loop) commitChanges(ctx context.Context, task *Task) error {
 	return nil
 }
 
+const (
+	// maxFailMsgOutput is the maximum agent output included in progress records.
+	maxFailMsgOutput = 2000
+	// maxLogOutput is the maximum agent output included in log messages.
+	maxLogOutput = 500
+)
+
+// truncateString truncates s to max runes, appending "..." if truncated.
+func truncateString(s string, max int) string {
+	runes := []rune(s)
+	if len(runes) <= max {
+		return s
+	}
+	return string(runes[:max]) + "..."
+}
+
 // logProgressErr logs a warning if a progress tracking call fails.
 func (l *Loop) logProgressErr(op string, err error) {
 	if err != nil {
@@ -435,7 +456,12 @@ func (l *Loop) RunSingleTask(ctx context.Context, task *Task, prompt string) *It
 	result.Output = output
 	if err != nil {
 		result.Error = fmt.Sprintf("agent execution failed: %s", err)
-		l.logProgressErr("RecordFailed", l.progress.RecordFailed(task.ID, task.Title, result.Error))
+		failMsg := result.Error
+		if output != "" {
+			l.logger.Warn("agent output before failure", "task", task.ID, "output", truncateString(output, maxLogOutput))
+			failMsg = fmt.Sprintf("%s\n\nAgent output:\n%s", failMsg, truncateString(output, maxFailMsgOutput))
+		}
+		l.logProgressErr("RecordFailed", l.progress.RecordFailed(task.ID, task.Title, failMsg))
 		return result
 	}
 

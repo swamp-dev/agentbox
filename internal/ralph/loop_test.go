@@ -930,6 +930,32 @@ func TestRunIterationAgentFailure(t *testing.T) {
 	}
 }
 
+func TestRunIterationAgentFailureIncludesOutput(t *testing.T) {
+	tasks := []Task{
+		{ID: "task-1", Title: "Fail with output", Description: "fails but has output", Status: "pending"},
+	}
+	loop := newTestableLoop(t, tasks, 10)
+
+	loop.runAgentFn = func(_ context.Context, _ string) (string, error) {
+		return "Permission denied: /workspace is not writable", fmt.Errorf("container exited with code 1")
+	}
+
+	_ = loop.runIteration(context.Background())
+
+	// The progress file should contain the agent output, not just the error.
+	data, err := os.ReadFile(filepath.Join(loop.projectPath, "progress.txt"))
+	if err != nil {
+		t.Fatalf("reading progress file: %v", err)
+	}
+	contents := string(data)
+	if !strings.Contains(contents, "Permission denied") {
+		t.Errorf("progress file should contain agent output, got:\n%s", contents)
+	}
+	if !strings.Contains(contents, "container exited with code 1") {
+		t.Errorf("progress file should contain error message, got:\n%s", contents)
+	}
+}
+
 func TestRunIterationAgentReportsFailure(t *testing.T) {
 	tasks := []Task{
 		{ID: "task-1", Title: "Agent fails", Description: "agent says no", Status: "pending"},
