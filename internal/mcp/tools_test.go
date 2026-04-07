@@ -272,7 +272,8 @@ func TestToolCallAgentboxRun(t *testing.T) {
 }
 
 func TestToolCallAgentboxRalphStart(t *testing.T) {
-	input := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"agentbox_ralph_start","arguments":{"project_dir":"/tmp/nonexistent"}}}` + "\n"
+	// Nonexistent project_dir should return a tool-level error, not a JSON-RPC error.
+	input := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"agentbox_ralph_start","arguments":{"project_dir":"/tmp/does-not-exist-agentbox-test"}}}` + "\n"
 	stdin := strings.NewReader(input)
 	var stdout bytes.Buffer
 
@@ -287,11 +288,21 @@ func TestToolCallAgentboxRalphStart(t *testing.T) {
 	}
 	if resp.Error != nil {
 		t.Fatalf("unexpected JSON-RPC error: %v", resp.Error)
+	}
+
+	resultJSON, _ := json.Marshal(resp.Result)
+	var callResult ToolCallResult
+	if err := json.Unmarshal(resultJSON, &callResult); err != nil {
+		t.Fatalf("unmarshal result: %v", err)
+	}
+	if !callResult.IsError {
+		t.Error("expected isError=true for nonexistent project_dir")
 	}
 }
 
 func TestToolCallAgentboxSprintStart(t *testing.T) {
-	input := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"agentbox_sprint_start","arguments":{"project_dir":"/tmp/nonexistent"}}}` + "\n"
+	// Nonexistent project_dir should return a tool-level error, not a JSON-RPC error.
+	input := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"agentbox_sprint_start","arguments":{"project_dir":"/tmp/does-not-exist-agentbox-test"}}}` + "\n"
 	stdin := strings.NewReader(input)
 	var stdout bytes.Buffer
 
@@ -306,6 +317,15 @@ func TestToolCallAgentboxSprintStart(t *testing.T) {
 	}
 	if resp.Error != nil {
 		t.Fatalf("unexpected JSON-RPC error: %v", resp.Error)
+	}
+
+	resultJSON, _ := json.Marshal(resp.Result)
+	var callResult ToolCallResult
+	if err := json.Unmarshal(resultJSON, &callResult); err != nil {
+		t.Fatalf("unmarshal result: %v", err)
+	}
+	if !callResult.IsError {
+		t.Error("expected isError=true for nonexistent project_dir")
 	}
 }
 
@@ -564,14 +584,17 @@ func TestEvictSessionsMixed(t *testing.T) {
 func TestHandleSprintStartNetworkPassthrough(t *testing.T) {
 	h := NewToolHandler(nil)
 
+	// Use a real directory so project_dir validation passes.
+	dir := t.TempDir()
+
 	args, _ := json.Marshal(map[string]interface{}{
-		"project_dir":       "/tmp/nonexistent",
+		"project_dir":       dir,
 		"network":           "restricted",
 		"allowed_endpoints": []string{"api.anthropic.com:443"},
 	})
 	result := h.Call("agentbox_sprint_start", args)
 
-	// Sprint start is async — should return a session ID even if the dir doesn't exist
+	// Sprint start is async — should return a session ID for a valid directory
 	if result.IsError {
 		t.Fatalf("unexpected error: %s", result.Content[0].Text)
 	}
@@ -582,6 +605,56 @@ func TestHandleSprintStartNetworkPassthrough(t *testing.T) {
 	}
 	if resp["session_id"] == "" {
 		t.Error("expected non-empty session_id")
+	}
+}
+
+func TestHandleRalphStartNonexistentProjectDir(t *testing.T) {
+	h := NewToolHandler(nil)
+
+	args, _ := json.Marshal(map[string]string{"project_dir": "/tmp/nonexistent-project-xyz-50"})
+	result := h.Call("agentbox_ralph_start", args)
+
+	if !result.IsError {
+		t.Fatal("expected isError=true for nonexistent project_dir")
+	}
+	text := result.Content[0].Text
+	if !strings.Contains(text, "does not exist") {
+		t.Errorf("error should mention directory does not exist, got: %s", text)
+	}
+}
+
+func TestHandleSprintStartNonexistentProjectDir(t *testing.T) {
+	h := NewToolHandler(nil)
+
+	args, _ := json.Marshal(map[string]string{"project_dir": "/tmp/nonexistent-project-xyz-50"})
+	result := h.Call("agentbox_sprint_start", args)
+
+	if !result.IsError {
+		t.Fatal("expected isError=true for nonexistent project_dir")
+	}
+	text := result.Content[0].Text
+	if !strings.Contains(text, "does not exist") {
+		t.Errorf("error should mention directory does not exist, got: %s", text)
+	}
+}
+
+func TestHandleRunNonexistentProjectDir(t *testing.T) {
+	h := NewToolHandler(nil)
+	t.Setenv("ANTHROPIC_API_KEY", "test-key")
+
+	args, _ := json.Marshal(map[string]interface{}{
+		"project_dir": "/tmp/nonexistent-project-xyz-50",
+		"agent":       "claude",
+		"prompt":      "test",
+	})
+	result := h.Call("agentbox_run", args)
+
+	if !result.IsError {
+		t.Fatal("expected isError=true for nonexistent project_dir")
+	}
+	text := result.Content[0].Text
+	if !strings.Contains(text, "does not exist") {
+		t.Errorf("error should mention directory does not exist, got: %s", text)
 	}
 }
 

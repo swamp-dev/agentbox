@@ -119,6 +119,10 @@ func (h *ToolHandler) handleRun(argsJSON json.RawMessage) *ToolCallResult {
 		return textError("project_dir, agent, and prompt are required")
 	}
 
+	if err := validateProjectDir(args.ProjectDir); err != nil {
+		return textError(err.Error())
+	}
+
 	maxTimeoutMinutes := int(defaultAsyncTimeout / time.Minute)
 	if args.Timeout > maxTimeoutMinutes {
 		return textError(fmt.Sprintf("timeout %d minutes exceeds maximum of %d minutes", args.Timeout, maxTimeoutMinutes))
@@ -222,6 +226,10 @@ func (h *ToolHandler) handleRalphStart(argsJSON json.RawMessage) *ToolCallResult
 		return textError("project_dir is required")
 	}
 
+	if err := validateProjectDir(args.ProjectDir); err != nil {
+		return textError(err.Error())
+	}
+
 	cfg, err := config.Load("")
 	if err != nil {
 		return textError(fmt.Sprintf("loading config: %v", err))
@@ -298,6 +306,12 @@ func (h *ToolHandler) handleSprintStart(argsJSON json.RawMessage) *ToolCallResul
 	var args sprintStartArgs
 	if err := json.Unmarshal(argsJSON, &args); err != nil {
 		return textError(fmt.Sprintf("invalid arguments: %v", err))
+	}
+
+	if args.ProjectDir != "" {
+		if err := validateProjectDir(args.ProjectDir); err != nil {
+			return textError(err.Error())
+		}
 	}
 
 	cfg := supervisor.DefaultConfig()
@@ -677,6 +691,21 @@ func (h *ToolHandler) handleSprintStatus(argsJSON json.RawMessage) *ToolCallResu
 }
 
 // --- helpers ---
+
+// validateProjectDir checks that the given path exists and is a directory.
+func validateProjectDir(path string) error {
+	info, err := os.Stat(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return fmt.Errorf("project_dir does not exist: %s", path)
+		}
+		return fmt.Errorf("checking project_dir: %w", err)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("project_dir is not a directory: %s", path)
+	}
+	return nil
+}
 
 func textResult(text string) *ToolCallResult {
 	return &ToolCallResult{
