@@ -47,9 +47,8 @@ func (m *Manager) Close() error {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	for id, rn := range m.restrictedNets {
+	for _, rn := range m.restrictedNets {
 		_ = m.RemoveRestrictedNetwork(ctx, rn)
-		delete(m.restrictedNets, id)
 	}
 
 	return m.client.Close()
