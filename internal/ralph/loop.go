@@ -178,7 +178,12 @@ func (l *Loop) runIteration(ctx context.Context) error {
 
 	output, err := l.runAgentFn(ctx, prompt)
 	if err != nil {
-		l.logProgressErr("RecordFailed", l.progress.RecordFailed(task.ID, task.Title, err.Error()))
+		failMsg := err.Error()
+		if output != "" {
+			l.logger.Warn("agent output before failure", "task", task.ID, "output", truncateString(output, 500))
+			failMsg = fmt.Sprintf("%s\n\nAgent output:\n%s", failMsg, truncateString(output, 2000))
+		}
+		l.logProgressErr("RecordFailed", l.progress.RecordFailed(task.ID, task.Title, failMsg))
 		return fmt.Errorf("agent execution failed: %w", err)
 	}
 
@@ -376,6 +381,14 @@ func (l *Loop) commitChanges(ctx context.Context, task *Task) error {
 	)
 
 	return nil
+}
+
+// truncateString truncates s to max characters, appending "..." if truncated.
+func truncateString(s string, max int) string {
+	if len(s) <= max {
+		return s
+	}
+	return s[:max] + "..."
 }
 
 // logProgressErr logs a warning if a progress tracking call fails.
