@@ -38,6 +38,11 @@ func (m *Manager) CreateRestrictedNetwork(ctx context.Context, baseName string, 
 	netName := RestrictedNetworkName(baseName)
 	proxyName := ProxyContainerName(baseName)
 
+	// Remove any stale network and proxy container from a prior run that
+	// wasn't cleaned up (e.g., crash, kill -9). Without this, Docker returns
+	// "network already exists" and blocks subsequent runs.
+	m.removeStaleNetwork(ctx, netName, proxyName)
+
 	// Create internal network — no default gateway to internet.
 	netResp, err := m.client.NetworkCreate(ctx, netName, network.CreateOptions{
 		Driver:   "bridge",
@@ -113,6 +118,16 @@ func (m *Manager) CreateRestrictedNetwork(ctx context.Context, baseName string, 
 	}
 
 	return rn, nil
+}
+
+// removeStaleNetwork removes a leftover network and proxy container from a prior
+// run. This is best-effort — errors are silently ignored since the resources may
+// not exist.
+func (m *Manager) removeStaleNetwork(ctx context.Context, netName, proxyName string) {
+	timeout := 5
+	_ = m.client.ContainerStop(ctx, proxyName, dockercontainer.StopOptions{Timeout: &timeout})
+	_ = m.client.ContainerRemove(ctx, proxyName, dockercontainer.RemoveOptions{Force: true})
+	_ = m.client.NetworkRemove(ctx, netName)
 }
 
 // RemoveRestrictedNetwork tears down the proxy container and internal network.

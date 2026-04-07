@@ -1,6 +1,24 @@
 package container
 
-import "testing"
+import (
+	"fmt"
+	"testing"
+)
+
+func TestStaleNetworkNamingConsistency(t *testing.T) {
+	// removeStaleNetwork uses the same naming convention as CreateRestrictedNetwork.
+	// Verify the names match so stale cleanup targets the right resources.
+	baseName := "my-project"
+	netName := RestrictedNetworkName(baseName)
+	proxyName := ProxyContainerName(baseName)
+
+	if netName != fmt.Sprintf("agentbox-net-%s", baseName) {
+		t.Errorf("unexpected network name: %s", netName)
+	}
+	if proxyName != fmt.Sprintf("agentbox-proxy-%s", baseName) {
+		t.Errorf("unexpected proxy name: %s", proxyName)
+	}
+}
 
 func TestProxyContainerName(t *testing.T) {
 	tests := []struct {

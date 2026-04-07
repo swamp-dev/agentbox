@@ -40,8 +40,17 @@ func NewManager() (*Manager, error) {
 	}, nil
 }
 
-// Close releases the Docker client resources.
+// Close cleans up any remaining restricted networks and releases the Docker
+// client resources. This is a safety net for networks not cleaned up by Remove
+// (e.g., if the process was interrupted).
 func (m *Manager) Close() error {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	for _, rn := range m.restrictedNets {
+		_ = m.RemoveRestrictedNetwork(ctx, rn)
+	}
+
 	return m.client.Close()
 }
 
