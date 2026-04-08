@@ -246,20 +246,27 @@ func (h *ToolHandler) handleRalphStart(argsJSON json.RawMessage) *ToolCallResult
 	}
 
 	sessionID := uuid.New().String()
+	projectDir := args.ProjectDir
 
 	h.mu.Lock()
 	h.evictSessions()
 	h.sessions[sessionID] = &asyncSession{ID: sessionID, Status: "running"}
 	h.mu.Unlock()
 
+	// Write initial state file for the wait command.
+	if err := WriteSessionState(projectDir, sessionID, "running", ""); err != nil {
+		h.logger.Warn("failed to write session state", "error", err)
+	}
+
 	go func() {
 		logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
-		loop, err := ralph.NewLoop(cfg, args.ProjectDir, logger)
+		loop, err := ralph.NewLoop(cfg, projectDir, logger)
 		if err != nil {
 			h.mu.Lock()
 			h.sessions[sessionID].Status = "failed"
 			h.sessions[sessionID].Error = err.Error()
 			h.mu.Unlock()
+			_ = WriteSessionState(projectDir, sessionID, "failed", err.Error())
 			return
 		}
 		defer loop.Close()
@@ -271,17 +278,20 @@ func (h *ToolHandler) handleRalphStart(argsJSON json.RawMessage) *ToolCallResult
 			h.sessions[sessionID].Status = "failed"
 			h.sessions[sessionID].Error = err.Error()
 			h.mu.Unlock()
+			_ = WriteSessionState(projectDir, sessionID, "failed", err.Error())
 			return
 		}
 
 		h.mu.Lock()
 		h.sessions[sessionID].Status = "completed"
 		h.mu.Unlock()
+		_ = WriteSessionState(projectDir, sessionID, "completed", "")
 	}()
 
 	data, err := json.Marshal(map[string]string{
-		"session_id": sessionID,
-		"message":    "Ralph loop started",
+		"session_id":   sessionID,
+		"message":      "Ralph loop started",
+		"wait_command": fmt.Sprintf("agentbox wait --session %s --project %s", sessionID, projectDir),
 	})
 	if err != nil {
 		return textError(fmt.Sprintf("marshaling result: %v", err))
@@ -350,11 +360,16 @@ func (h *ToolHandler) handleSprintStart(argsJSON json.RawMessage) *ToolCallResul
 	}
 
 	sessionID := uuid.New().String()
+	projectDir := cfg.WorkDir
 
 	h.mu.Lock()
 	h.evictSessions()
 	h.sessions[sessionID] = &asyncSession{ID: sessionID, Status: "running"}
 	h.mu.Unlock()
+
+	if err := WriteSessionState(projectDir, sessionID, "running", ""); err != nil {
+		h.logger.Warn("failed to write session state", "error", err)
+	}
 
 	go func() {
 		logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
@@ -364,6 +379,7 @@ func (h *ToolHandler) handleSprintStart(argsJSON json.RawMessage) *ToolCallResul
 			h.sessions[sessionID].Status = "failed"
 			h.sessions[sessionID].Error = err.Error()
 			h.mu.Unlock()
+			_ = WriteSessionState(projectDir, sessionID, "failed", err.Error())
 			return
 		}
 
@@ -374,17 +390,20 @@ func (h *ToolHandler) handleSprintStart(argsJSON json.RawMessage) *ToolCallResul
 			h.sessions[sessionID].Status = "failed"
 			h.sessions[sessionID].Error = err.Error()
 			h.mu.Unlock()
+			_ = WriteSessionState(projectDir, sessionID, "failed", err.Error())
 			return
 		}
 
 		h.mu.Lock()
 		h.sessions[sessionID].Status = "completed"
 		h.mu.Unlock()
+		_ = WriteSessionState(projectDir, sessionID, "completed", "")
 	}()
 
 	data, err := json.Marshal(map[string]string{
-		"session_id": sessionID,
-		"message":    "Sprint started",
+		"session_id":   sessionID,
+		"message":      "Sprint started",
+		"wait_command": fmt.Sprintf("agentbox wait --session %s --project %s", sessionID, projectDir),
 	})
 	if err != nil {
 		return textError(fmt.Sprintf("marshaling result: %v", err))
@@ -771,7 +790,7 @@ func AllTools() []ToolDefinition {
 		},
 		{
 			Name:        "agentbox_ralph_start",
-			Description: "Start a Ralph loop for a PRD (async). Returns a session ID immediately that can be polled with agentbox_status.",
+			Description: "Start a Ralph loop for a PRD (async). Returns a session ID and a wait_command. Run the wait_command with Bash run_in_background to get notified on completion without polling.",
 			InputSchema: map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
@@ -797,7 +816,7 @@ func AllTools() []ToolDefinition {
 		},
 		{
 			Name:        "agentbox_sprint_start",
-			Description: "Start an autonomous sprint (async). Returns a session ID immediately that can be polled with agentbox_sprint_status.",
+			Description: "Start an autonomous sprint (async). Returns a session ID and a wait_command. Run the wait_command with Bash run_in_background to get notified on completion without polling.",
 			InputSchema: map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
