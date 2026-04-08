@@ -70,7 +70,7 @@ var availableImages = []struct {
 }{
 	{"agentbox/node", "20", "Node.js 20, npm, pnpm, Claude Code"},
 	{"agentbox/python", "3.12", "Python 3.12, pip, poetry, uv"},
-	{"agentbox/go", "1.22", "Go 1.22, common tools"},
+	{"agentbox/go", "1.24", "Go 1.24, common tools"},
 	{"agentbox/rust", "1.77", "Rust, cargo"},
 	{"agentbox/full", "latest", "All languages + all agents"},
 }

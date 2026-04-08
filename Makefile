@@ -48,7 +48,7 @@ docker-build: ## Build Docker images locally
 	docker build -t agentbox/base:latest -f images/base/Dockerfile .
 	docker build -t agentbox/node:20 -f images/node/Dockerfile .
 	docker build -t agentbox/python:3.12 -f images/python/Dockerfile .
-	docker build -t agentbox/go:1.22 -f images/go/Dockerfile .
+	docker build -t agentbox/go:1.24 -f images/go/Dockerfile .
 	docker build -t agentbox/rust:1.77 -f images/rust/Dockerfile .
 	docker build -t agentbox/full:latest -f images/full/Dockerfile .
 
