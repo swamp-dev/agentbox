@@ -2,7 +2,9 @@ package cli
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"time"
 
@@ -11,13 +13,21 @@ import (
 	"github.com/swamp-dev/agentbox/internal/mcp"
 )
 
+// Sentinel errors for wait exit codes.
 var (
-	waitSession      string
-	waitProject      string
-	waitTimeout      time.Duration
-	waitPollInterval time.Duration
-	waitJSON         bool
+	ErrSessionFailed = errors.New("session failed")
+	ErrWaitTimeout   = errors.New("wait timeout exceeded")
 )
+
+// waitConfig holds the parameters for runWait, extracted from cobra flags.
+// Using a struct avoids reliance on mutable package-level vars in tests.
+type waitConfig struct {
+	session      string
+	project      string
+	timeout      time.Duration
+	pollInterval time.Duration
+	jsonOutput   bool
+}
 
 var waitCmd = &cobra.Command{
 	Use:   "wait",
@@ -35,56 +45,74 @@ Exit codes:
 	Example: `  agentbox wait --session abc-123 --project /path/to/project
   agentbox wait --session abc-123 --project . --json
   agentbox wait --session abc-123 --project . --timeout 1h`,
-	RunE: runWait,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		session, _ := cmd.Flags().GetString("session")
+		project, _ := cmd.Flags().GetString("project")
+		timeout, _ := cmd.Flags().GetDuration("timeout")
+		pollInterval, _ := cmd.Flags().GetDuration("poll-interval")
+		jsonOutput, _ := cmd.Flags().GetBool("json")
+
+		cfg := waitConfig{
+			session:      session,
+			project:      project,
+			timeout:      timeout,
+			pollInterval: pollInterval,
+			jsonOutput:   jsonOutput,
+		}
+		return runWait(cfg)
+	},
 }
 
 func init() {
-	waitCmd.Flags().StringVar(&waitSession, "session", "", "session ID to wait for (required)")
-	waitCmd.Flags().StringVarP(&waitProject, "project", "p", ".", "project directory")
-	waitCmd.Flags().DurationVar(&waitTimeout, "timeout", 4*time.Hour, "maximum time to wait")
-	waitCmd.Flags().DurationVar(&waitPollInterval, "poll-interval", 2*time.Second, "polling interval")
-	waitCmd.Flags().BoolVar(&waitJSON, "json", false, "output result as JSON")
+	waitCmd.Flags().String("session", "", "session ID to wait for (required)")
+	waitCmd.Flags().StringP("project", "p", ".", "project directory")
+	waitCmd.Flags().Duration("timeout", 4*time.Hour, "maximum time to wait")
+	waitCmd.Flags().Duration("poll-interval", 2*time.Second, "polling interval")
+	waitCmd.Flags().Bool("json", false, "output result as JSON")
 	_ = waitCmd.MarkFlagRequired("session")
 }
 
-func runWait(cmd *cobra.Command, args []string) error {
-	deadline := time.Now().Add(waitTimeout)
+func runWait(cfg waitConfig) error {
+	deadline := time.Now().Add(cfg.timeout)
 
 	for {
-		state, err := mcp.ReadSessionState(waitProject, waitSession)
+		state, err := mcp.ReadSessionState(cfg.project, cfg.session)
 		if err != nil {
+			if !errors.Is(err, fs.ErrNotExist) {
+				return fmt.Errorf("reading session state: %w", err)
+			}
 			// File doesn't exist yet — session may not have started writing.
 			if time.Now().After(deadline) {
-				fmt.Fprintf(os.Stderr, "timeout: session %s did not complete within %s\n", waitSession, waitTimeout)
-				os.Exit(2)
+				return ErrWaitTimeout
 			}
-			time.Sleep(waitPollInterval)
+			time.Sleep(cfg.pollInterval)
 			continue
 		}
 
 		switch state.Status {
 		case "completed":
-			printWaitResult(state)
+			printWaitResult(state, cfg.jsonOutput)
 			return nil
 		case "failed":
-			printWaitResult(state)
-			os.Exit(1)
+			printWaitResult(state, cfg.jsonOutput)
+			return ErrSessionFailed
 		default:
 			// Still running.
 			if time.Now().After(deadline) {
-				fmt.Fprintf(os.Stderr, "timeout: session %s did not complete within %s\n", waitSession, waitTimeout)
-				os.Exit(2)
+				return ErrWaitTimeout
 			}
-			time.Sleep(waitPollInterval)
+			time.Sleep(cfg.pollInterval)
 		}
 	}
 }
 
-func printWaitResult(state *mcp.SessionState) {
-	if waitJSON {
+func printWaitResult(state *mcp.SessionState, jsonOutput bool) {
+	if jsonOutput {
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
-		_ = enc.Encode(state)
+		if err := enc.Encode(state); err != nil {
+			fmt.Fprintf(os.Stderr, "error encoding result: %v\n", err)
+		}
 		return
 	}
 

@@ -291,7 +291,7 @@ func (h *ToolHandler) handleRalphStart(argsJSON json.RawMessage) *ToolCallResult
 	data, err := json.Marshal(map[string]string{
 		"session_id":   sessionID,
 		"message":      "Ralph loop started",
-		"wait_command": fmt.Sprintf("agentbox wait --session %s --project %s", sessionID, projectDir),
+		"wait_command": fmt.Sprintf("agentbox wait --session %s --project %q", sessionID, projectDir),
 	})
 	if err != nil {
 		return textError(fmt.Sprintf("marshaling result: %v", err))
@@ -403,7 +403,7 @@ func (h *ToolHandler) handleSprintStart(argsJSON json.RawMessage) *ToolCallResul
 	data, err := json.Marshal(map[string]string{
 		"session_id":   sessionID,
 		"message":      "Sprint started",
-		"wait_command": fmt.Sprintf("agentbox wait --session %s --project %s", sessionID, projectDir),
+		"wait_command": fmt.Sprintf("agentbox wait --session %s --project %q", sessionID, projectDir),
 	})
 	if err != nil {
 		return textError(fmt.Sprintf("marshaling result: %v", err))
