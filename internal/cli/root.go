@@ -60,6 +60,7 @@ func init() {
 	rootCmd.AddCommand(journalCmd)
 	rootCmd.AddCommand(mcpCmd)
 	rootCmd.AddCommand(proxyCmd)
+	rootCmd.AddCommand(waitCmd)
 }
 
 func initConfig() {
