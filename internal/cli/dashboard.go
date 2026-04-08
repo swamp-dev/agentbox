@@ -26,7 +26,7 @@ var (
 
 func init() {
 	dashboardCmd.Flags().BoolVar(&dashboardJSON, "json", false, "output as JSON")
-	dashboardCmd.Flags().BoolVar(&dashboardWatch, "watch", false, "continuously refresh")
+	dashboardCmd.Flags().BoolVar(&dashboardWatch, "watch", false, "live-refresh the dashboard every 2s (exit with Ctrl-C)")
 }
 
 func runDashboard(cmd *cobra.Command, args []string) error {
@@ -35,6 +35,14 @@ func runDashboard(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	defer s.Close()
+
+	if dashboardWatch && dashboardJSON {
+		return fmt.Errorf("--watch and --json cannot be combined")
+	}
+
+	if dashboardWatch {
+		return runWatchMode(s, sessionID)
+	}
 
 	data, err := s.ExportDashboardData(sessionID)
 	if err != nil {
