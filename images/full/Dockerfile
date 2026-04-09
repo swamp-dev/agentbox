@@ -40,8 +40,8 @@ ENV PATH="/usr/local/go/bin:$PATH"
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
 ENV PATH="/root/.cargo/bin:$PATH"
 
-# Install AI agents
-RUN npm install -g @anthropic-ai/claude-code
+# Install AI agents and proxy support for restricted network mode
+RUN npm install -g @anthropic-ai/claude-code global-agent
 RUN pip3 install --no-cache-dir --break-system-packages aider-chat poetry uv
 
 # Install Go tools
