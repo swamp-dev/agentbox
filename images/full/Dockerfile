@@ -32,8 +32,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     python3-venv \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Go 1.22
-RUN curl -fsSL https://go.dev/dl/go1.22.0.linux-amd64.tar.gz | tar -C /usr/local -xzf -
+# Install Go 1.24
+RUN curl -fsSL https://go.dev/dl/go1.24.12.linux-amd64.tar.gz | tar -C /usr/local -xzf -
 ENV PATH="/usr/local/go/bin:$PATH"
 
 # Install Rust

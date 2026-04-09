@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -80,7 +81,7 @@ func ImageName(imageType string) string {
 	case "python":
 		return "agentbox/python:3.12"
 	case "go":
-		return "agentbox/go:1.22"
+		return "agentbox/go:1.24"
 	case "rust":
 		return "agentbox/rust:1.77"
 	case "full":
@@ -165,10 +166,22 @@ func (m *Manager) Create(ctx context.Context, cfg *ContainerConfig) (string, err
 	// permissions. We do NOT mount ~/.claude.json because Claude Code tries to
 	// write to it during execution and a read-only mount causes it to hang.
 
+	// Inject git safe.directory via environment variables so the agent user
+	// can run git commands in /workspace without "dubious ownership" errors.
+	// Uses GIT_CONFIG_COUNT/KEY/VALUE (git >= 2.31, shipped in all bookworm
+	// images) to avoid writing to ~/.gitconfig, which may be a read-only
+	// bind mount from the host.
+	//
+	// If cfg.Env already contains GIT_CONFIG_* entries, merge by reading the
+	// existing count and appending our entry at the next index.
+	env := make([]string, len(cfg.Env), len(cfg.Env)+3)
+	copy(env, cfg.Env)
+	_, env = appendGitConfig(env, "safe.directory", "/workspace")
+
 	containerCfg := &container.Config{
 		Image:      cfg.Image,
 		Cmd:        wrapCmdForAgent(cfg.Cmd),
-		Env:        cfg.Env,
+		Env:        env,
 		WorkingDir: "/workspace",
 		User:       "root",
 		Tty:        cfg.Interactive,
@@ -331,6 +344,41 @@ func (m *Manager) Logs(ctx context.Context, containerID string) (string, error) 
 	}
 
 	return stdout.String() + stderr.String(), nil
+}
+
+// appendGitConfig appends a GIT_CONFIG_KEY/VALUE entry to env, merging with
+// any existing GIT_CONFIG_COUNT. Returns the index used and the updated env.
+func appendGitConfig(env []string, key, value string) (int, []string) {
+	// Find existing count to merge rather than clobber.
+	idx := 0
+	for _, e := range env {
+		if strings.HasPrefix(e, "GIT_CONFIG_COUNT=") {
+			n, err := strconv.Atoi(strings.TrimPrefix(e, "GIT_CONFIG_COUNT="))
+			if err == nil {
+				idx = n
+			}
+		}
+	}
+
+	// Update or append the count.
+	countStr := fmt.Sprintf("GIT_CONFIG_COUNT=%d", idx+1)
+	found := false
+	for i, e := range env {
+		if strings.HasPrefix(e, "GIT_CONFIG_COUNT=") {
+			env[i] = countStr
+			found = true
+			break
+		}
+	}
+	if !found {
+		env = append(env, countStr)
+	}
+
+	env = append(env,
+		fmt.Sprintf("GIT_CONFIG_KEY_%d=%s", idx, key),
+		fmt.Sprintf("GIT_CONFIG_VALUE_%d=%s", idx, value),
+	)
+	return idx, env
 }
 
 // stripANSI removes ANSI escape codes from a string.

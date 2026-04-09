@@ -1,5 +1,5 @@
 # Go agentbox image
-FROM golang:1.22-bookworm
+FROM golang:1.24-bookworm
 
 # Create non-root agent user
 RUN groupadd -g 1000 agent && \

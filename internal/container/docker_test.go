@@ -6,6 +6,7 @@ import (
 	"context"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -20,7 +21,7 @@ func TestImageName(t *testing.T) {
 	}{
 		{"node", "agentbox/node:20"},
 		{"python", "agentbox/python:3.12"},
-		{"go", "agentbox/go:1.22"},
+		{"go", "agentbox/go:1.24"},
 		{"rust", "agentbox/rust:1.77"},
 		{"full", "agentbox/full:latest"},
 		{"custom:tag", "custom:tag"},
@@ -324,6 +325,102 @@ func TestWrapCmdForAgent(t *testing.T) {
 	}
 }
 
+func TestAppendGitConfig(t *testing.T) {
+	tests := []struct {
+		name    string
+		env     []string
+		key     string
+		value   string
+		wantIdx int
+		wantEnv []string
+	}{
+		{
+			name:    "empty env",
+			env:     nil,
+			key:     "safe.directory",
+			value:   "/workspace",
+			wantIdx: 0,
+			wantEnv: []string{
+				"GIT_CONFIG_COUNT=1",
+				"GIT_CONFIG_KEY_0=safe.directory",
+				"GIT_CONFIG_VALUE_0=/workspace",
+			},
+		},
+		{
+			name:    "existing non-git env",
+			env:     []string{"HOME=/home/agent", "PATH=/usr/bin"},
+			key:     "safe.directory",
+			value:   "/workspace",
+			wantIdx: 0,
+			wantEnv: []string{
+				"HOME=/home/agent",
+				"PATH=/usr/bin",
+				"GIT_CONFIG_COUNT=1",
+				"GIT_CONFIG_KEY_0=safe.directory",
+				"GIT_CONFIG_VALUE_0=/workspace",
+			},
+		},
+		{
+			name: "merges with existing git config",
+			env: []string{
+				"GIT_CONFIG_COUNT=1",
+				"GIT_CONFIG_KEY_0=user.name",
+				"GIT_CONFIG_VALUE_0=Agent",
+			},
+			key:     "safe.directory",
+			value:   "/workspace",
+			wantIdx: 1,
+			wantEnv: []string{
+				"GIT_CONFIG_COUNT=2",
+				"GIT_CONFIG_KEY_0=user.name",
+				"GIT_CONFIG_VALUE_0=Agent",
+				"GIT_CONFIG_KEY_1=safe.directory",
+				"GIT_CONFIG_VALUE_1=/workspace",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Copy input to avoid aliasing.
+			var input []string
+			if tt.env != nil {
+				input = make([]string, len(tt.env))
+				copy(input, tt.env)
+			}
+
+			idx, got := appendGitConfig(input, tt.key, tt.value)
+			if idx != tt.wantIdx {
+				t.Errorf("index = %d, want %d", idx, tt.wantIdx)
+			}
+			if len(got) != len(tt.wantEnv) {
+				t.Fatalf("env length = %d, want %d\ngot:  %v\nwant: %v", len(got), len(tt.wantEnv), got, tt.wantEnv)
+			}
+			for i := range got {
+				if got[i] != tt.wantEnv[i] {
+					t.Errorf("env[%d] = %q, want %q", i, got[i], tt.wantEnv[i])
+				}
+			}
+		})
+	}
+}
+
+func TestAppendGitConfig_DoesNotAliasCaller(t *testing.T) {
+	// Ensure the input slice is not mutated when it has spare capacity.
+	original := make([]string, 1, 10)
+	original[0] = "FOO=bar"
+
+	snapshot := original[0]
+	_, _ = appendGitConfig(original, "safe.directory", "/workspace")
+
+	if original[0] != snapshot {
+		t.Errorf("caller's slice was mutated: got %q, want %q", original[0], snapshot)
+	}
+	if len(original) != 1 {
+		t.Errorf("caller's slice length changed: got %d, want 1", len(original))
+	}
+}
+
 func TestRunWritableWorkspace(t *testing.T) {
 	if testing.Short() || !dockerAvailable() {
 		t.Skip("skipping: requires Docker")
@@ -399,6 +496,47 @@ func TestRunNonInteractiveOutput(t *testing.T) {
 
 	if !strings.Contains(output, "hello world") {
 		t.Errorf("expected output to contain 'hello world', got %q", output)
+	}
+}
+
+func TestRunGitSafeDirectoryEnv(t *testing.T) {
+	if testing.Short() || !dockerAvailable() {
+		t.Skip("skipping: requires Docker")
+	}
+
+	cm, err := NewManager()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cm.Close()
+
+	// Create a temp dir with a git repo so git commands have something to work with.
+	projectDir := t.TempDir()
+	for _, args := range [][]string{
+		{"git", "init", projectDir},
+		{"git", "-C", projectDir, "commit", "--allow-empty", "-m", "init"},
+	} {
+		out, err := exec.Command(args[0], args[1:]...).CombinedOutput()
+		if err != nil {
+			t.Fatalf("%v failed: %s", args, out)
+		}
+	}
+
+	cfg := &ContainerConfig{
+		Name:        "agentbox-test-git-safe-dir",
+		Image:       "agentbox/full:latest",
+		WorkDir:     "/workspace",
+		ProjectPath: projectDir,
+		Cmd:         []string{"bash", "-c", "git status && echo git-ok"},
+		Network:     "none",
+	}
+
+	output, err := cm.Run(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("Run() error = %v\nOutput: %s", err, output)
+	}
+	if !strings.Contains(output, "git-ok") {
+		t.Errorf("expected 'git-ok' in output (git safe.directory should be set), got %q", output)
 	}
 }
 
