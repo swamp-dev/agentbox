@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"net"
 	"os"
-	"strings"
 
 	dockercontainer "github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/mount"
@@ -127,9 +126,12 @@ func (m *Manager) CreateRestrictedNetwork(ctx context.Context, baseName string, 
 		_ = m.RemoveRestrictedNetwork(ctx, rn)
 		return nil, fmt.Errorf("inspecting proxy container: %w", err)
 	}
-	if netInfo, ok := inspect.NetworkSettings.Networks[rn.NetworkName]; ok {
-		rn.ProxyIP = netInfo.IPAddress
+	netInfo, ok := inspect.NetworkSettings.Networks[rn.NetworkName]
+	if !ok || netInfo.IPAddress == "" {
+		_ = m.RemoveRestrictedNetwork(ctx, rn)
+		return nil, fmt.Errorf("proxy container has no IP on network %s", rn.NetworkName)
 	}
+	rn.ProxyIP = netInfo.IPAddress
 
 	return rn, nil
 }
@@ -153,9 +155,10 @@ func resolveExtraHosts(allowedHosts []string, proxyName, proxyIP string) ([]stri
 	var hosts []string
 
 	for _, hostPort := range allowedHosts {
-		host := hostPort
-		if idx := strings.LastIndex(hostPort, ":"); idx != -1 {
-			host = hostPort[:idx]
+		host, _, err := net.SplitHostPort(hostPort)
+		if err != nil {
+			// No port component — treat the whole string as a host.
+			host = hostPort
 		}
 
 		if seen[host] {

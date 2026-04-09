@@ -116,17 +116,15 @@ func TestResolveExtraHosts(t *testing.T) {
 			}
 
 			if tt.wantProxy {
+				want := tt.proxyName + ":" + tt.proxyIP
 				found := false
 				for _, h := range hosts {
-					if strings.HasPrefix(h, tt.proxyName+":") {
+					if h == want {
 						found = true
-						if !strings.HasSuffix(h, tt.proxyIP) {
-							t.Errorf("proxy entry = %q, want IP %s", h, tt.proxyIP)
-						}
 					}
 				}
 				if !found {
-					t.Errorf("missing proxy entry in %v", hosts)
+					t.Errorf("missing proxy entry %q in %v", want, hosts)
 				}
 			}
 		})
