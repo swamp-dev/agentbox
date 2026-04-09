@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 
 	dockercontainer "github.com/docker/docker/api/types/container"
@@ -17,6 +18,7 @@ type RestrictedNetwork struct {
 	NetworkName string
 	ProxyID     string
 	ProxyName   string
+	ProxyIP     string // IP on the internal network
 }
 
 // ProxyContainerName returns the deterministic name for the proxy sidecar.
@@ -117,6 +119,20 @@ func (m *Manager) CreateRestrictedNetwork(ctx context.Context, baseName string, 
 		return nil, fmt.Errorf("starting proxy container: %w", err)
 	}
 
+	// Discover the proxy's IP on the internal network so we can inject it
+	// into the agent container's /etc/hosts via ExtraHosts.
+	inspect, err := m.client.ContainerInspect(ctx, rn.ProxyID)
+	if err != nil {
+		_ = m.RemoveRestrictedNetwork(ctx, rn)
+		return nil, fmt.Errorf("inspecting proxy container: %w", err)
+	}
+	netInfo, ok := inspect.NetworkSettings.Networks[rn.NetworkName]
+	if !ok || netInfo.IPAddress == "" {
+		_ = m.RemoveRestrictedNetwork(ctx, rn)
+		return nil, fmt.Errorf("proxy container has no IP on network %s", rn.NetworkName)
+	}
+	rn.ProxyIP = netInfo.IPAddress
+
 	return rn, nil
 }
 
@@ -128,6 +144,49 @@ func (m *Manager) removeStaleNetwork(ctx context.Context, netName, proxyName str
 	_ = m.client.ContainerStop(ctx, proxyName, dockercontainer.StopOptions{Timeout: &timeout})
 	_ = m.client.ContainerRemove(ctx, proxyName, dockercontainer.RemoveOptions{Force: true})
 	_ = m.client.NetworkRemove(ctx, netName)
+}
+
+// resolveExtraHosts resolves allowed endpoint hostnames on the host and returns
+// Docker ExtraHosts entries (hostname:ip). This allows containers on internal
+// networks (which lack external DNS) to reach allowed destinations.
+// The proxyName and proxyIP are also added so the agent can reach the proxy.
+func resolveExtraHosts(allowedHosts []string, proxyName, proxyIP string) ([]string, error) {
+	seen := make(map[string]bool)
+	var hosts []string
+
+	for _, hostPort := range allowedHosts {
+		host, _, err := net.SplitHostPort(hostPort)
+		if err != nil {
+			// No port component — treat the whole string as a host.
+			host = hostPort
+		}
+
+		if seen[host] {
+			continue
+		}
+		seen[host] = true
+
+		// Skip if it's already an IP address.
+		if net.ParseIP(host) != nil {
+			continue
+		}
+
+		ips, err := net.LookupHost(host)
+		if err != nil {
+			return nil, fmt.Errorf("resolving %s: %w", host, err)
+		}
+		if len(ips) == 0 {
+			return nil, fmt.Errorf("no addresses found for %s", host)
+		}
+		hosts = append(hosts, fmt.Sprintf("%s:%s", host, ips[0]))
+	}
+
+	// Add proxy container mapping.
+	if proxyName != "" && proxyIP != "" {
+		hosts = append(hosts, fmt.Sprintf("%s:%s", proxyName, proxyIP))
+	}
+
+	return hosts, nil
 }
 
 // RemoveRestrictedNetwork tears down the proxy container and internal network.

@@ -212,6 +212,17 @@ func (m *Manager) Create(ctx context.Context, cfg *ContainerConfig) (string, err
 		}
 		// Place agent container on the internal network only.
 		hostCfg.NetworkMode = container.NetworkMode(rn.NetworkName)
+
+		// Pre-resolve allowed endpoint hostnames on the host and inject
+		// into /etc/hosts. The internal network has no external DNS, so
+		// without this the agent gets EAI_AGAIN on any hostname lookup.
+		extraHosts, err := resolveExtraHosts(cfg.AllowedEndpoints, rn.ProxyName, rn.ProxyIP)
+		if err != nil {
+			_ = m.RemoveRestrictedNetwork(ctx, rn)
+			return "", fmt.Errorf("resolving allowed endpoints: %w", err)
+		}
+		hostCfg.ExtraHosts = extraHosts
+
 		// Inject proxy env vars so tools use the proxy.
 		proxyURL := fmt.Sprintf("http://%s:3128", rn.ProxyName)
 		containerCfg.Env = append(containerCfg.Env,
@@ -219,6 +230,18 @@ func (m *Manager) Create(ctx context.Context, cfg *ContainerConfig) (string, err
 			"HTTPS_PROXY="+proxyURL,
 			"http_proxy="+proxyURL,
 			"https_proxy="+proxyURL,
+		)
+
+		// Node.js fetch doesn't honor HTTP_PROXY natively. Bootstrap
+		// global-agent (installed in Node.js images) to patch
+		// http.globalAgent/https.globalAgent. Non-Node.js processes
+		// ignore NODE_OPTIONS. NODE_PATH ensures the agent user can
+		// find globally installed packages.
+		containerCfg.Env = append(containerCfg.Env,
+			"GLOBAL_AGENT_HTTP_PROXY="+proxyURL,
+			"GLOBAL_AGENT_HTTPS_PROXY="+proxyURL,
+			"NODE_OPTIONS=--require global-agent/bootstrap",
+			"NODE_PATH=/usr/lib/node_modules",
 		)
 	}
 
