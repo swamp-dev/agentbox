@@ -25,3 +25,8 @@ dist/
 test-project/
 *.local
 cover.out
+
+# Ralph runtime artifacts
+.agentbox/
+prd.json
+progress.txt
