@@ -235,13 +235,12 @@ func (m *Manager) Create(ctx context.Context, cfg *ContainerConfig) (string, err
 		// Node.js fetch doesn't honor HTTP_PROXY natively. Bootstrap
 		// global-agent (installed in Node.js images) to patch
 		// http.globalAgent/https.globalAgent. Non-Node.js processes
-		// ignore NODE_OPTIONS. NODE_PATH ensures the agent user can
-		// find globally installed packages.
+		// ignore NODE_OPTIONS. Uses absolute path since --require
+		// doesn't respect NODE_PATH.
 		containerCfg.Env = append(containerCfg.Env,
 			"GLOBAL_AGENT_HTTP_PROXY="+proxyURL,
 			"GLOBAL_AGENT_HTTPS_PROXY="+proxyURL,
-			"NODE_OPTIONS=--require global-agent/bootstrap",
-			"NODE_PATH=/usr/lib/node_modules",
+			"NODE_OPTIONS=--require /usr/lib/node_modules/global-agent-bootstrap.js",
 		)
 	}
 

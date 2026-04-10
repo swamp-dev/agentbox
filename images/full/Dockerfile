@@ -41,7 +41,8 @@ RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --de
 ENV PATH="/root/.cargo/bin:$PATH"
 
 # Install AI agents and proxy support for restricted network mode
-RUN npm install -g @anthropic-ai/claude-code global-agent
+RUN npm install -g @anthropic-ai/claude-code global-agent && \
+    echo "require('global-agent').bootstrap();" > /usr/lib/node_modules/global-agent-bootstrap.js
 RUN pip3 install --no-cache-dir --break-system-packages aider-chat poetry uv
 
 # Install Go tools
