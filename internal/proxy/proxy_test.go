@@ -217,6 +217,13 @@ func TestHandleCONNECTAllowed(t *testing.T) {
 	if string(buf) != msg {
 		t.Errorf("expected echoed %q, got %q", msg, string(buf))
 	}
+
+	// Close the client connection explicitly so the proxy's io.Copy
+	// goroutines see EOF and handleConnect can return. Without this,
+	// the proxy waits for both copy directions to finish, which hangs
+	// under the race detector when the echo server closes its side
+	// but the client connection stays open until test cleanup.
+	conn.Close()
 }
 
 func TestHandleCONNECTBlockedTunnel(t *testing.T) {
