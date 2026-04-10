@@ -23,7 +23,8 @@ RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
 RUN npm install -g pnpm
 
 # Install Claude Code CLI and proxy support for restricted network mode
-RUN npm install -g @anthropic-ai/claude-code global-agent
+RUN npm install -g @anthropic-ai/claude-code global-agent && \
+    echo "require('global-agent').bootstrap();" > /usr/lib/node_modules/global-agent-bootstrap.js
 
 # Set up workspace
 WORKDIR /workspace

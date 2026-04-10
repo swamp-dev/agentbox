@@ -30,18 +30,33 @@ make build
 ## Quick Start
 
 ```bash
+# Build Docker images (first time only)
+make docker-build-full
+
 # Initialize a project
 agentbox init
 
 # Run a single agent session
-agentbox run --agent claude --prompt "Fix the bug in auth.ts"
+agentbox run --agent claude-cli --project . --prompt "Fix the bug in auth.ts"
 
 # Run Ralph loop until PRD complete
-agentbox ralph --max-iterations 10 --prd prd.json
+agentbox ralph --agent claude-cli --max-iterations 10 --prd prd.json
 
 # Check progress
 agentbox status
+agentbox status --tasks          # show individual task list
+agentbox dashboard --watch       # live-refresh TUI
 ```
+
+### MCP Integration (Claude Code)
+
+Add to your Claude Code MCP config to use agentbox as tools:
+
+```bash
+agentbox mcp start
+```
+
+Then Claude Code can call `agentbox_ralph_start`, `agentbox_run`, etc. Use the returned `wait_command` with `Bash run_in_background` to get notified on completion without polling.
 
 ## Commands
 
@@ -49,9 +64,15 @@ agentbox status
 |---------|-------------|
 | `run` | Single agent session in container |
 | `ralph` | Run Ralph loop until PRD complete |
+| `sprint` | Run autonomous multi-sprint development |
 | `init` | Initialize project with templates |
-| `status` | Show Ralph loop progress |
+| `status` | Show Ralph loop progress (`--tasks` for task list) |
+| `dashboard` | Show sprint progress and metrics (`--watch` for live TUI) |
+| `wait` | Block until async session completes (for automation) |
+| `journal` | View dev diary entries |
+| `retro` | View sprint retrospective reports |
 | `images` | Manage base Docker images |
+| `mcp` | Start MCP server for Claude Code integration |
 | `version` | Print version information |
 
 See [docs/cli-reference.md](docs/cli-reference.md) for complete flag reference.
@@ -116,7 +137,7 @@ The Ralph pattern enables iterative AI agent execution with memory persistence:
 |-------|----------|
 | `agentbox/node:20` | Node.js 20, npm, pnpm, Claude Code |
 | `agentbox/python:3.12` | Python 3.12, pip, poetry, uv |
-| `agentbox/go:1.22` | Go 1.22, common tools |
+| `agentbox/go:1.24` | Go 1.24, common tools |
 | `agentbox/rust:1.77` | Rust, cargo |
 | `agentbox/full:latest` | All languages + all agents |
 

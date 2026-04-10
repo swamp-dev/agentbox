@@ -141,6 +141,7 @@ agentbox status [flags]
 | `--project` | `-p` | `string` | `.` | Project directory |
 | `--prd` | | `string` | `prd.json` | PRD file path |
 | `--json` | | `bool` | `false` | Output in JSON format |
+| `--tasks` | | `bool` | `false` | Show individual task list with status icons |
 
 ### JSON Output Format
 
@@ -160,17 +161,100 @@ When `--json` is used, output follows this structure:
 }
 ```
 
+When `--json --tasks` is used, a `task_list` array is included:
+
+```json
+{
+  "project": "my-project",
+  "progress": 0.6,
+  "tasks": { "total": 5, "completed": 3, "in_progress": 1, "pending": 1 },
+  "task_list": [
+    { "id": "task-1", "title": "Setup environment", "status": "done" },
+    { "id": "task-2", "title": "Implement feature", "status": "in_progress" }
+  ],
+  "is_complete": false
+}
+```
+
 ### Examples
 
 ```bash
 # Show progress for current directory
 agentbox status
 
+# Show individual tasks
+agentbox status --tasks
+
 # JSON output for scripting
-agentbox status --json
+agentbox status --json --tasks
 
 # Check a specific project
 agentbox status -p /path/to/project --prd custom-prd.json
+```
+
+---
+
+## `agentbox dashboard`
+
+Show sprint progress and metrics with optional live-refresh mode.
+
+```
+agentbox dashboard [flags]
+```
+
+### Flags
+
+| Flag | Short | Type | Default | Description |
+|------|-------|------|---------|-------------|
+| `--json` | | `bool` | `false` | Output as JSON |
+| `--watch` | | `bool` | `false` | Live-refresh the dashboard every 2s (exit with Ctrl-C) |
+
+### Examples
+
+```bash
+# Show dashboard snapshot
+agentbox dashboard
+
+# Live-refresh TUI (updates every 2 seconds)
+agentbox dashboard --watch
+```
+
+---
+
+## `agentbox wait`
+
+Block until an async session completes or fails. Designed for automation — use with Claude Code's `Bash run_in_background` to get notified on completion without polling `agentbox_status`.
+
+```
+agentbox wait [flags]
+```
+
+### Flags
+
+| Flag | Short | Type | Default | Description |
+|------|-------|------|---------|-------------|
+| `--session` | | `string` | *(required)* | Session ID to wait for |
+| `--project` | `-p` | `string` | `.` | Project directory |
+| `--timeout` | | `duration` | `4h` | Maximum time to wait |
+| `--poll-interval` | | `duration` | `2s` | Polling interval |
+| `--json` | | `bool` | `false` | Output result as JSON |
+
+### Exit Codes
+
+| Code | Meaning |
+|------|---------|
+| `0` | Session completed successfully |
+| `1` | Session failed |
+| `2` | Timeout exceeded |
+
+### Examples
+
+```bash
+# Wait for a session (session ID from ralph_start/sprint_start response)
+agentbox wait --session abc-123 --project /path/to/project
+
+# With JSON output and custom timeout
+agentbox wait --session abc-123 --project . --json --timeout 1h
 ```
 
 ---
@@ -199,7 +283,7 @@ agentbox images list
 |------|-----|----------|
 | `agentbox/node` | `20` | Node.js 20, npm, pnpm, Claude Code |
 | `agentbox/python` | `3.12` | Python 3.12, pip, poetry, uv |
-| `agentbox/go` | `1.22` | Go 1.22, common tools |
+| `agentbox/go` | `1.24` | Go 1.24, common tools |
 | `agentbox/rust` | `1.77` | Rust, cargo |
 | `agentbox/full` | `latest` | All languages + all agents |
 

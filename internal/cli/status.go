@@ -1,8 +1,10 @@
 package cli
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -15,6 +17,7 @@ var (
 	statusProject string
 	statusPRD     string
 	statusJSON    bool
+	statusTasks   bool
 )
 
 var statusCmd = &cobra.Command{
@@ -39,6 +42,7 @@ func init() {
 	statusCmd.Flags().StringVarP(&statusProject, "project", "p", ".", "project directory")
 	statusCmd.Flags().StringVar(&statusPRD, "prd", "prd.json", "PRD file path")
 	statusCmd.Flags().BoolVar(&statusJSON, "json", false, "output in JSON format")
+	statusCmd.Flags().BoolVar(&statusTasks, "tasks", false, "show task list")
 }
 
 func runStatus(cmd *cobra.Command, args []string) error {
@@ -47,7 +51,7 @@ func runStatus(cmd *cobra.Command, args []string) error {
 		cfg = config.DefaultConfig()
 	}
 
-	prdPath := statusProject + "/" + statusPRD
+	prdPath := filepath.Join(statusProject, statusPRD)
 	if _, err := os.Stat(prdPath); os.IsNotExist(err) {
 		return fmt.Errorf("PRD file not found: %s\nRun 'agentbox init' to create one", prdPath)
 	}
@@ -57,17 +61,25 @@ func runStatus(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("loading PRD: %w", err)
 	}
 
-	progressPath := statusProject + "/" + cfg.Ralph.ProgressFile
+	progressPath := filepath.Join(statusProject, cfg.Ralph.ProgressFile)
 	progress := ralph.NewProgress(progressPath)
 	if err := progress.Load(); err != nil {
 		logger.Warn("could not load progress file", "error", err)
 	}
 
 	if statusJSON {
-		return printStatusJSON(prd, progress)
+		return printStatusJSON(prd, progress, statusTasks)
 	}
 
-	return printStatusText(prd, progress)
+	if err := printStatusText(prd, progress); err != nil {
+		return err
+	}
+
+	if statusTasks {
+		printTaskList(prd)
+	}
+
+	return nil
 }
 
 func printStatusText(prd *ralph.PRD, progress *ralph.Progress) error {
@@ -123,22 +135,68 @@ func printStatusText(prd *ralph.PRD, progress *ralph.Progress) error {
 	return nil
 }
 
-func printStatusJSON(prd *ralph.PRD, progress *ralph.Progress) error {
-	fmt.Printf(`{
-  "project": "%s",
-  "progress": %.1f,
-  "tasks": {
-    "total": %d,
-    "completed": %d,
-    "in_progress": %d,
-    "pending": %d
-  },
-  "is_complete": %t
+type statusJSONOutput struct {
+	Project    string          `json:"project"`
+	Progress   float64         `json:"progress"`
+	Tasks      statusTaskCount `json:"tasks"`
+	TaskList   []taskEntry     `json:"task_list,omitempty"`
+	IsComplete bool            `json:"is_complete"`
 }
-`, prd.Name, prd.Progress(), prd.Metadata.TotalTasks, prd.Metadata.Completed,
-		prd.Metadata.InProgress, prd.Metadata.Pending, prd.IsComplete())
+
+type statusTaskCount struct {
+	Total      int `json:"total"`
+	Completed  int `json:"completed"`
+	InProgress int `json:"in_progress"`
+	Pending    int `json:"pending"`
+}
+
+type taskEntry struct {
+	ID     string `json:"id"`
+	Title  string `json:"title"`
+	Status string `json:"status"`
+}
+
+func printStatusJSON(prd *ralph.PRD, progress *ralph.Progress, includeTasks bool) error {
+	out := statusJSONOutput{
+		Project:  prd.Name,
+		Progress: prd.Progress(),
+		Tasks: statusTaskCount{
+			Total:      prd.Metadata.TotalTasks,
+			Completed:  prd.Metadata.Completed,
+			InProgress: prd.Metadata.InProgress,
+			Pending:    prd.Metadata.Pending,
+		},
+		IsComplete: prd.IsComplete(),
+	}
+
+	if includeTasks {
+		out.TaskList = make([]taskEntry, len(prd.Tasks))
+		for i, task := range prd.Tasks {
+			out.TaskList[i] = taskEntry{
+				ID:     task.ID,
+				Title:  task.Title,
+				Status: task.Status,
+			}
+		}
+	}
+
+	data, err := json.MarshalIndent(out, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshaling status JSON: %w", err)
+	}
+	fmt.Println(string(data))
 
 	return nil
+}
+
+func printTaskList(prd *ralph.PRD) {
+	fmt.Println("Tasks:")
+	for _, task := range prd.Tasks {
+		icon := statusIcon(task.Status)
+		title := truncate(task.Title, 60)
+		fmt.Printf("  %s %-10s %s\n", icon, task.ID, title)
+	}
+	fmt.Println()
 }
 
 func renderProgressBar(percent float64, width int) string {
@@ -153,11 +211,11 @@ func renderProgressBar(percent float64, width int) string {
 
 func statusIcon(status string) string {
 	switch status {
-	case "COMPLETED":
+	case "COMPLETED", "done":
 		return "✓"
-	case "STARTED":
+	case "STARTED", "in_progress":
 		return "▶"
-	case "FAILED":
+	case "FAILED", "blocked":
 		return "✗"
 	case "ITERATION":
 		return "↻"
