@@ -1,0 +1,45 @@
+# Node.js agentbox image
+FROM debian:bookworm-slim
+
+# Create non-root agent user
+RUN groupadd -g 1000 agent && \
+    useradd -m -u 1000 -g agent -s /bin/bash agent
+
+# Install common utilities
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    curl \
+    git \
+    openssh-client \
+    jq \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Node.js 20
+RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
+    apt-get install -y nodejs && \
+    rm -rf /var/lib/apt/lists/*
+
+# Install pnpm globally
+RUN npm install -g pnpm
+
+# Install Claude Code CLI and proxy support for restricted network mode
+RUN npm install -g @anthropic-ai/claude-code global-agent && \
+    echo "require('global-agent').bootstrap();" > /usr/lib/node_modules/global-agent-bootstrap.js
+
+# Set up workspace
+WORKDIR /workspace
+RUN chown agent:agent /workspace
+
+# Ensure .claude dir exists and is writable for claude-cli runtime state
+RUN mkdir -p /home/agent/.claude && chown agent:agent /home/agent/.claude
+
+# Switch to agent user
+USER agent
+
+# Configure npm for agent user
+RUN mkdir -p /home/agent/.npm && \
+    npm config set prefix /home/agent/.npm
+
+ENV PATH="/home/agent/.npm/bin:$PATH"
+
+CMD ["/bin/bash"]

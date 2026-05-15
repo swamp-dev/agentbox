@@ -1,0 +1,1880 @@
+package supervisor
+
+import (
+	"context"
+	"fmt"
+	"log/slog"
+	"os"
+	"os/exec"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/swamp-dev/agentbox/internal/journal"
+	"github.com/swamp-dev/agentbox/internal/metrics"
+	"github.com/swamp-dev/agentbox/internal/ralph"
+	"github.com/swamp-dev/agentbox/internal/retro"
+	"github.com/swamp-dev/agentbox/internal/review"
+	"github.com/swamp-dev/agentbox/internal/store"
+	"github.com/swamp-dev/agentbox/internal/taskdb"
+	"github.com/swamp-dev/agentbox/internal/workflow"
+)
+
+func testLogger() *slog.Logger {
+	return slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+}
+
+func TestDefaultConfig(t *testing.T) {
+	cfg := DefaultConfig()
+	if cfg.SprintSize != 5 {
+		t.Errorf("expected sprint size 5, got %d", cfg.SprintSize)
+	}
+	if cfg.MaxSprints != 20 {
+		t.Errorf("expected max sprints 20, got %d", cfg.MaxSprints)
+	}
+	if cfg.Agent != "claude" {
+		t.Errorf("expected agent 'claude', got %q", cfg.Agent)
+	}
+	if !cfg.JournalEnabled {
+		t.Error("expected journal enabled by default")
+	}
+	if !cfg.ReviewEnabled {
+		t.Error("expected review enabled by default")
+	}
+}
+
+func TestDefaultConfig_DockerFields(t *testing.T) {
+	cfg := DefaultConfig()
+
+	if cfg.DockerImage != "full" {
+		t.Errorf("expected docker image 'full', got %q", cfg.DockerImage)
+	}
+	if cfg.DockerMemory != "4g" {
+		t.Errorf("expected docker memory '4g', got %q", cfg.DockerMemory)
+	}
+	if cfg.DockerCPUs != "2" {
+		t.Errorf("expected docker cpus '2', got %q", cfg.DockerCPUs)
+	}
+	if cfg.DockerNetwork != "none" {
+		t.Errorf("expected docker network 'none', got %q", cfg.DockerNetwork)
+	}
+	if cfg.DryRun {
+		t.Error("expected dry run false by default")
+	}
+}
+
+func TestConfig_ToRalphConfig(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.WorkDir = "/projects/my-app"
+	cfg.Agent = "claude"
+	cfg.MaxSprints = 10
+	cfg.SprintSize = 5
+	cfg.PRDFile = "prd.json"
+	cfg.DockerImage = "go"
+	cfg.DockerMemory = "8g"
+	cfg.DockerCPUs = "4"
+	cfg.DockerNetwork = "bridge"
+	cfg.QualityChecks = []QualityCheck{
+		{Name: "test", Command: "go test ./..."},
+		{Name: "lint", Command: "golangci-lint run"},
+	}
+
+	rc := cfg.ToRalphConfig()
+
+	// Version.
+	if rc.Version != "1.0" {
+		t.Errorf("expected version '1.0', got %q", rc.Version)
+	}
+
+	// Project name from WorkDir basename.
+	if rc.Project.Name != "my-app" {
+		t.Errorf("expected project name 'my-app', got %q", rc.Project.Name)
+	}
+
+	// Agent.
+	if rc.Agent.Name != "claude" {
+		t.Errorf("expected agent 'claude', got %q", rc.Agent.Name)
+	}
+
+	// Docker.
+	if rc.Docker.Image != "go" {
+		t.Errorf("expected docker image 'go', got %q", rc.Docker.Image)
+	}
+	if rc.Docker.Resources.Memory != "8g" {
+		t.Errorf("expected memory '8g', got %q", rc.Docker.Resources.Memory)
+	}
+	if rc.Docker.Resources.CPUs != "4" {
+		t.Errorf("expected cpus '4', got %q", rc.Docker.Resources.CPUs)
+	}
+	if rc.Docker.Network != "bridge" {
+		t.Errorf("expected network 'bridge', got %q", rc.Docker.Network)
+	}
+
+	// Ralph.
+	if rc.Ralph.MaxIterations != 50 {
+		t.Errorf("expected max iterations 50, got %d", rc.Ralph.MaxIterations)
+	}
+	if rc.Ralph.PRDFile != "prd.json" {
+		t.Errorf("expected prd file 'prd.json', got %q", rc.Ralph.PRDFile)
+	}
+	if rc.Ralph.ProgressFile != "progress.txt" {
+		t.Errorf("expected progress file 'progress.txt', got %q", rc.Ralph.ProgressFile)
+	}
+	if rc.Ralph.AutoCommit {
+		t.Error("expected auto commit false (supervisor handles commits)")
+	}
+	if rc.Ralph.StopSignal != "<promise>COMPLETE</promise>" {
+		t.Errorf("expected stop signal, got %q", rc.Ralph.StopSignal)
+	}
+
+	// Quality checks.
+	if len(rc.Ralph.QualityChecks) != 2 {
+		t.Fatalf("expected 2 quality checks, got %d", len(rc.Ralph.QualityChecks))
+	}
+	if rc.Ralph.QualityChecks[0].Name != "test" {
+		t.Errorf("expected first check 'test', got %q", rc.Ralph.QualityChecks[0].Name)
+	}
+	if rc.Ralph.QualityChecks[1].Command != "golangci-lint run" {
+		t.Errorf("expected second check command, got %q", rc.Ralph.QualityChecks[1].Command)
+	}
+}
+
+func TestConfig_ToRalphConfig_EmptyWorkDir(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.WorkDir = ""
+
+	rc := cfg.ToRalphConfig()
+	if rc.Project.Name != "." {
+		t.Errorf("expected project name '.', got %q", rc.Project.Name)
+	}
+}
+
+func TestConfig_ToRalphConfig_NoQualityChecks(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.QualityChecks = nil
+
+	rc := cfg.ToRalphConfig()
+	if rc.Ralph.QualityChecks != nil {
+		t.Errorf("expected nil quality checks, got %v", rc.Ralph.QualityChecks)
+	}
+}
+
+func TestSupervisorRun_DryRunUsesNoopRunner(t *testing.T) {
+	// When DryRun is true, Supervisor.Run() should not attempt to create
+	// a ralph.Loop (which requires Docker). Instead it falls through to
+	// NoopAgentRunner via nil agentRunner.
+	prdContent := `{"name":"Test","tasks":[{"id":"t-1","title":"Task","description":"Do it","status":"pending","priority":1}]}`
+	repoDir := initGitRepo(t, map[string]string{"prd.json": prdContent})
+
+	cfg := DefaultConfig()
+	cfg.WorkDir = repoDir
+	cfg.BranchName = "feat/test-dry-run"
+	cfg.DryRun = true
+	cfg.JournalEnabled = false
+	cfg.ReviewEnabled = false
+	cfg.MaxSprints = 1
+	cfg.SprintSize = 1
+
+	sup, err := New(cfg, testLogger())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	ctx := context.Background()
+	// Run should complete without error and without Docker.
+	// NoopAgentRunner will handle the task (returning failure), but the
+	// session completes normally. Run() closes the store on return, so
+	// we only verify it returns nil.
+	err = sup.Run(ctx)
+	if err != nil {
+		t.Fatalf("Run with DryRun: %v", err)
+	}
+}
+
+func TestParseBudgetDuration(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.BudgetDuration = "4h30m"
+
+	if err := cfg.ParseBudgetDuration(); err != nil {
+		t.Fatalf("ParseBudgetDuration: %v", err)
+	}
+	if cfg.Budget.MaxDuration != 4*time.Hour+30*time.Minute {
+		t.Errorf("expected 4h30m, got %v", cfg.Budget.MaxDuration)
+	}
+}
+
+func TestParseBudgetDuration_Invalid(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.BudgetDuration = "not-a-duration"
+
+	if err := cfg.ParseBudgetDuration(); err == nil {
+		t.Error("expected error for invalid duration")
+	}
+}
+
+func TestContextBuilder_BuildPrompt(t *testing.T) {
+	s, err := store.Open(":memory:")
+	if err != nil {
+		t.Fatalf("opening store: %v", err)
+	}
+	defer s.Close()
+
+	sessionID, _ := s.CreateSession("", "main", "")
+
+	// Insert a completed task.
+	if err := s.InsertTask(&store.Task{
+		ID: "t-1", SessionID: sessionID, Title: "Setup", Status: "completed", MaxAttempts: 3,
+	}); err != nil {
+		t.Fatalf("InsertTask: %v", err)
+	}
+
+	cb := NewContextBuilder(s, sessionID)
+
+	task := &taskdb.Task{
+		ID:          "t-2",
+		Title:       "Add auth",
+		Description: "Implement authentication middleware",
+		Attempts: []taskdb.Attempt{
+			{Number: 1, AgentName: "claude", Success: false, ErrorMsg: "compile error on line 42"},
+		},
+	}
+
+	prompt := cb.BuildPrompt(task, "test-project")
+
+	if prompt == "" {
+		t.Error("expected non-empty prompt")
+	}
+
+	checks := []string{
+		"test-project",
+		"t-2",
+		"Add auth",
+		"Implement authentication middleware",
+		"Already Completed",
+		"Setup",
+		"<promise>COMPLETE</promise>",
+		"compile error on line 42",
+	}
+	for _, check := range checks {
+		if !strings.Contains(prompt, check) {
+			t.Errorf("prompt missing expected content: %q", check)
+		}
+	}
+}
+
+func TestSprintRunner_BudgetExceeded(t *testing.T) {
+	s, err := store.Open(":memory:")
+	if err != nil {
+		t.Fatalf("opening store: %v", err)
+	}
+	defer s.Close()
+
+	sessionID, _ := s.CreateSession("", "main", "")
+
+	if err := s.InsertTask(&store.Task{
+		ID: "t-1", SessionID: sessionID, Title: "Test", Status: "pending", MaxAttempts: 3,
+	}); err != nil {
+		t.Fatalf("InsertTask: %v", err)
+	}
+
+	budget := metrics.Budget{
+		MaxTokens:     1,
+		WarnThreshold: 0.8,
+	}
+
+	if err := s.RecordUsage(&store.ResourceUsage{
+		SessionID: sessionID, Iteration: 1, EstimatedTokens: 100,
+	}); err != nil {
+		t.Fatalf("RecordUsage: %v", err)
+	}
+
+	collector := metrics.NewCollector(s, sessionID)
+	enforcer := metrics.NewBudgetEnforcer(budget)
+
+	usage, _ := collector.TotalUsage()
+	status := enforcer.Check(usage.EstimatedTokens, 1)
+	if !status.Exceeded {
+		t.Error("expected budget to be exceeded")
+	}
+}
+
+func TestAdaptiveController_Apply(t *testing.T) {
+	s, err := store.Open(":memory:")
+	if err != nil {
+		t.Fatalf("opening store: %v", err)
+	}
+	defer s.Close()
+
+	sessionID, _ := s.CreateSession("", "main", "")
+	if err := s.InsertTask(&store.Task{
+		ID: "t-1", SessionID: sessionID, Title: "Failing task", Status: "pending", MaxAttempts: 3,
+	}); err != nil {
+		t.Fatalf("InsertTask: %v", err)
+	}
+
+	logger := testLogger()
+	ac := NewAdaptiveController(s, sessionID, nil, logger)
+
+	recs := []retro.Recommendation{
+		{Action: retro.RecDeferTask, TaskID: "t-1", Description: "Too many failures"},
+	}
+
+	actions := ac.Apply(recs)
+	if len(actions) != 1 {
+		t.Errorf("expected 1 action, got %d", len(actions))
+	}
+
+	task, _ := s.GetTask("t-1")
+	if task.Status != "deferred" {
+		t.Errorf("expected task deferred, got %s", task.Status)
+	}
+}
+
+func TestAdaptiveController_Apply_SwitchAgent_WithFallback(t *testing.T) {
+	s := openTestStore(t)
+	sessionID, _ := s.CreateSession("", "main", "")
+	logger := testLogger()
+
+	ac := NewAdaptiveController(s, sessionID, nil, logger)
+	ac.SetFallbackAgent("aider")
+
+	recs := []retro.Recommendation{
+		{Action: retro.RecSwitchAgent, Description: "Multiple consecutive failures — try switching to fallback agent"},
+	}
+
+	actions := ac.Apply(recs)
+
+	// Should have set switchRecommended flag.
+	recommended, agent := ac.SwitchRecommended()
+	if !recommended {
+		t.Error("expected SwitchRecommended() to return true")
+	}
+	if agent != "aider" {
+		t.Errorf("expected agent 'aider', got %q", agent)
+	}
+
+	// Action message should indicate the switch was recommended.
+	if len(actions) != 1 {
+		t.Fatalf("expected 1 action, got %d", len(actions))
+	}
+	if !strings.Contains(actions[0], "agent switch") {
+		t.Errorf("expected action to mention 'agent switch', got %q", actions[0])
+	}
+	if !strings.Contains(actions[0], "aider") {
+		t.Errorf("expected action to mention 'aider', got %q", actions[0])
+	}
+
+	// SwitchRecommended should be cleared after reading.
+	recommended2, _ := ac.SwitchRecommended()
+	if recommended2 {
+		t.Error("expected SwitchRecommended() to return false after first read")
+	}
+}
+
+func TestAdaptiveController_Apply_SwitchAgent_Idempotent(t *testing.T) {
+	s := openTestStore(t)
+	sessionID, _ := s.CreateSession("", "main", "")
+	logger := testLogger()
+
+	ac := NewAdaptiveController(s, sessionID, nil, logger)
+	ac.SetFallbackAgent("aider")
+
+	recs := []retro.Recommendation{
+		{Action: retro.RecSwitchAgent, Description: "first switch"},
+	}
+	ac.Apply(recs)
+
+	// Clear the recommendation.
+	ac.SwitchRecommended()
+
+	// Second switch recommendation should be ignored (idempotency guard).
+	recs2 := []retro.Recommendation{
+		{Action: retro.RecSwitchAgent, Description: "second switch"},
+	}
+	actions2 := ac.Apply(recs2)
+
+	if len(actions2) != 1 {
+		t.Fatalf("expected 1 action, got %d", len(actions2))
+	}
+	if !strings.Contains(actions2[0], "already applied") {
+		t.Errorf("expected idempotency message, got %q", actions2[0])
+	}
+
+	recommended, _ := ac.SwitchRecommended()
+	if recommended {
+		t.Error("expected SwitchRecommended() to return false after idempotency guard")
+	}
+}
+
+func TestAdaptiveController_Apply_SwitchAgent_NoFallback(t *testing.T) {
+	s := openTestStore(t)
+	sessionID, _ := s.CreateSession("", "main", "")
+	logger := testLogger()
+
+	ac := NewAdaptiveController(s, sessionID, nil, logger)
+	// No fallback configured — default behavior.
+
+	recs := []retro.Recommendation{
+		{Action: retro.RecSwitchAgent, Description: "try switching"},
+	}
+
+	actions := ac.Apply(recs)
+
+	// Should still produce a recommendation action (existing behavior).
+	if len(actions) != 1 {
+		t.Fatalf("expected 1 action, got %d", len(actions))
+	}
+	if !strings.Contains(actions[0], "Recommendation: switch agent") {
+		t.Errorf("expected recommendation action, got %q", actions[0])
+	}
+}
+
+func TestAdaptiveController_Apply_SwitchAgent_JournalEntry(t *testing.T) {
+	s := openTestStore(t)
+	sessionID, _ := s.CreateSession("", "main", "")
+	logger := testLogger()
+	j := journal.New(s, sessionID)
+
+	ac := NewAdaptiveController(s, sessionID, nil, logger)
+	ac.SetJournal(j)
+	ac.SetFallbackAgent("amp")
+
+	recs := []retro.Recommendation{
+		{Action: retro.RecSwitchAgent, Description: "stuck — switch agent"},
+	}
+
+	ac.Apply(recs)
+
+	// Verify a journal entry was written for the agent switch.
+	entries, err := s.JournalEntries(sessionID, &store.JournalQuery{Kind: string(journal.KindAgentSwitch)})
+	if err != nil {
+		t.Fatalf("JournalEntries: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 agent_switch journal entry, got %d", len(entries))
+	}
+	if !strings.Contains(entries[0].Summary, "amp") {
+		t.Errorf("expected journal entry to mention 'amp', got %q", entries[0].Summary)
+	}
+}
+
+func TestSprintRunner_WiresFallbackAgent(t *testing.T) {
+	s, sessionID, collector, budget, j, logger := setupTestSupervisorDeps(t)
+	cfg := DefaultConfig()
+	cfg.Agent = "claude"
+	cfg.FallbackAgent = "aider"
+	cfg.JournalEnabled = true
+
+	tdb := taskdb.New()
+	sr := NewSprintRunner(cfg, s, sessionID, nil, tdb, collector, budget, j, nil, logger)
+
+	// The adaptive controller should have the fallback agent configured.
+	if sr.adaptive.fallbackAgent != "aider" {
+		t.Errorf("expected fallback agent 'aider', got %q", sr.adaptive.fallbackAgent)
+	}
+
+	// Verify SwitchRecommended is initially false.
+	recommended, _ := sr.SwitchRecommended()
+	if recommended {
+		t.Error("expected SwitchRecommended() to be false initially")
+	}
+}
+
+// MockAgentRunner provides configurable success/failure responses.
+type MockAgentRunner struct {
+	results []*ralph.IterationResult
+	idx     int
+}
+
+func (m *MockAgentRunner) RunTask(_ context.Context, task *ralph.Task, _ string) *ralph.IterationResult {
+	if m.idx < len(m.results) {
+		r := m.results[m.idx]
+		m.idx++
+		return r
+	}
+	return &ralph.IterationResult{
+		TaskID:  task.ID,
+		Success: false,
+		Error:   "no more mock results",
+	}
+}
+
+// initGitRepo creates a git repo in a temp dir with an initial commit.
+// Optionally writes extra files before committing.
+func initGitRepo(t *testing.T, extraFiles map[string]string) string {
+	t.Helper()
+	repoDir := t.TempDir()
+	for _, args := range [][]string{
+		{"git", "init"},
+		{"git", "config", "user.email", "test@test.com"},
+		{"git", "config", "user.name", "Test"},
+		{"git", "checkout", "-b", "main"},
+	} {
+		cmd := exec.CommandContext(context.Background(), args[0], args[1:]...)
+		cmd.Dir = repoDir
+		if err := cmd.Run(); err != nil {
+			t.Fatalf("git %v: %v", args, err)
+		}
+	}
+	if err := os.WriteFile(repoDir+"/README.md", []byte("# Test\n"), 0644); err != nil {
+		t.Fatalf("WriteFile(README): %v", err)
+	}
+	for name, content := range extraFiles {
+		if err := os.WriteFile(repoDir+"/"+name, []byte(content), 0644); err != nil {
+			t.Fatalf("WriteFile(%s): %v", name, err)
+		}
+	}
+	cmd := exec.CommandContext(context.Background(), "git", "add", "-A")
+	cmd.Dir = repoDir
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("git add: %v", err)
+	}
+	cmd = exec.CommandContext(context.Background(), "git", "commit", "-m", "init")
+	cmd.Dir = repoDir
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("git commit: %v", err)
+	}
+	return repoDir
+}
+
+// gitCommitFile adds a file to the repo and commits it.
+func gitCommitFile(t *testing.T, repoDir, name, content, msg string) {
+	t.Helper()
+	if err := os.WriteFile(repoDir+"/"+name, []byte(content), 0644); err != nil {
+		t.Fatalf("WriteFile(%s): %v", name, err)
+	}
+	cmd := exec.CommandContext(context.Background(), "git", "add", "-A")
+	cmd.Dir = repoDir
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("git add: %v", err)
+	}
+	cmd = exec.CommandContext(context.Background(), "git", "commit", "-m", msg)
+	cmd.Dir = repoDir
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("git commit: %v", err)
+	}
+}
+
+// openTestStore opens an in-memory store for testing.
+func openTestStore(t *testing.T) *store.Store {
+	t.Helper()
+	s, err := store.Open(":memory:")
+	if err != nil {
+		t.Fatalf("opening test store: %v", err)
+	}
+	t.Cleanup(func() { s.Close() })
+	return s
+}
+
+// setupTestSupervisorDeps creates common test dependencies.
+func setupTestSupervisorDeps(t *testing.T) (*store.Store, int64, *metrics.Collector, *metrics.BudgetEnforcer, *journal.Journal, *slog.Logger) {
+	t.Helper()
+	s := openTestStore(t)
+	sessionID, err := s.CreateSession("", "main", "")
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	logger := testLogger()
+	collector := metrics.NewCollector(s, sessionID)
+	budget := metrics.NewBudgetEnforcer(metrics.DefaultBudget())
+	j := journal.New(s, sessionID)
+	return s, sessionID, collector, budget, j, logger
+}
+
+func TestNew(t *testing.T) {
+	dir := t.TempDir()
+	cfg := DefaultConfig()
+	cfg.WorkDir = dir
+
+	sup, err := New(cfg, testLogger())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer sup.Store().Close()
+
+	if sup.SessionID() == 0 {
+		t.Error("expected non-zero session ID")
+	}
+	if sup.Store() == nil {
+		t.Error("expected non-nil store")
+	}
+}
+
+func TestNew_DefaultConfig(t *testing.T) {
+	dir := t.TempDir()
+	cfg := DefaultConfig()
+	cfg.WorkDir = dir
+
+	sup, err := New(cfg, testLogger())
+	if err != nil {
+		t.Fatalf("New with defaults: %v", err)
+	}
+	defer sup.Store().Close()
+
+	if sup.cfg.SprintSize != 5 {
+		t.Errorf("expected default sprint size 5, got %d", sup.cfg.SprintSize)
+	}
+}
+
+func TestGeneratePRBody(t *testing.T) {
+	dir := t.TempDir()
+	cfg := DefaultConfig()
+	cfg.WorkDir = dir
+
+	sup, err := New(cfg, testLogger())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer sup.Store().Close()
+
+	// Add tasks to taskDB.
+	if err := sup.taskDB.Add(&taskdb.Task{
+		ID: "t-1", Title: "Setup auth", Status: taskdb.StatusCompleted, MaxAttempts: 3,
+	}); err != nil {
+		t.Fatalf("Add t-1: %v", err)
+	}
+	if err := sup.taskDB.Add(&taskdb.Task{
+		ID: "t-2", Title: "Add tests", Status: taskdb.StatusPending, MaxAttempts: 3,
+	}); err != nil {
+		t.Fatalf("Add t-2: %v", err)
+	}
+	if err := sup.taskDB.Add(&taskdb.Task{
+		ID: "t-3", Title: "Broken task", Status: taskdb.StatusFailed, MaxAttempts: 3,
+	}); err != nil {
+		t.Fatalf("Add t-3: %v", err)
+	}
+
+	body, err := sup.generatePRBody()
+	if err != nil {
+		t.Fatalf("generatePRBody: %v", err)
+	}
+
+	checks := []string{
+		"1/3",         // completed/total
+		"Setup auth",  // completed task
+		"Broken task", // failed task
+		"Unresolved",  // section header
+		"agentbox",    // footer
+	}
+	for _, check := range checks {
+		if !strings.Contains(body, check) {
+			t.Errorf("PR body missing expected content: %q", check)
+		}
+	}
+}
+
+func TestRunReviewGate_NoReviewer(t *testing.T) {
+	dir := t.TempDir()
+	cfg := DefaultConfig()
+	cfg.WorkDir = dir
+	cfg.ReviewEnabled = true
+
+	sup, err := New(cfg, testLogger())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer sup.Store().Close()
+
+	// reviewer is nil by default — runReviewGate should not panic
+	ctx := context.Background()
+	sup.runReviewGate(ctx)
+	// No panic = success
+}
+
+func TestSprintRunner_NewWithNilRunner(t *testing.T) {
+	s := openTestStore(t)
+	sessionID, _ := s.CreateSession("", "main", "")
+	cfg := DefaultConfig()
+	logger := testLogger()
+	collector := metrics.NewCollector(s, sessionID)
+	budget := metrics.NewBudgetEnforcer(metrics.DefaultBudget())
+	j := journal.New(s, sessionID)
+
+	// Pass nil runner — should use NoopAgentRunner
+	sr := NewSprintRunner(cfg, s, sessionID, nil, taskdb.New(), collector, budget, j, nil, logger)
+	if sr.runner == nil {
+		t.Fatal("expected non-nil runner after passing nil")
+	}
+}
+
+func TestSprintRunner_RunSprint_EmptyTaskDB(t *testing.T) {
+	s, sessionID, collector, budget, j, logger := setupTestSupervisorDeps(t)
+	cfg := DefaultConfig()
+	tdb := taskdb.New() // empty
+
+	sr := NewSprintRunner(cfg, s, sessionID, nil, tdb, collector, budget, j, nil, logger)
+	result, err := sr.RunSprint(context.Background(), 1, 1)
+	if err != nil {
+		t.Fatalf("RunSprint: %v", err)
+	}
+	if result.TasksAttempted != 0 {
+		t.Errorf("expected 0 tasks attempted, got %d", result.TasksAttempted)
+	}
+}
+
+func TestSprintRunner_RunSprint_Normal(t *testing.T) {
+	s, sessionID, collector, budget, j, logger := setupTestSupervisorDeps(t)
+	cfg := DefaultConfig()
+	cfg.SprintSize = 2
+	cfg.JournalEnabled = false
+
+	tdb := taskdb.New()
+	if err := tdb.Add(&taskdb.Task{ID: "t-1", Title: "Task 1", Status: taskdb.StatusPending, MaxAttempts: 3}); err != nil {
+		t.Fatalf("Add t-1: %v", err)
+	}
+	if err := tdb.Add(&taskdb.Task{ID: "t-2", Title: "Task 2", Status: taskdb.StatusPending, MaxAttempts: 3}); err != nil {
+		t.Fatalf("Add t-2: %v", err)
+	}
+
+	// Insert tasks into store too (for retro analysis).
+	if err := s.InsertTask(&store.Task{ID: "t-1", SessionID: sessionID, Title: "Task 1", Status: "pending", MaxAttempts: 3}); err != nil {
+		t.Fatalf("InsertTask t-1: %v", err)
+	}
+	if err := s.InsertTask(&store.Task{ID: "t-2", SessionID: sessionID, Title: "Task 2", Status: "pending", MaxAttempts: 3}); err != nil {
+		t.Fatalf("InsertTask t-2: %v", err)
+	}
+
+	mockRunner := &MockAgentRunner{
+		results: []*ralph.IterationResult{
+			{TaskID: "t-1", Success: true, Output: "done"},
+			{TaskID: "t-2", Success: true, Output: "done"},
+		},
+	}
+
+	// Create a temp dir for workflow (git operations).
+	dir := t.TempDir()
+	wf := workflow.NewGitWorkflow("", dir, logger)
+
+	sr := NewSprintRunner(cfg, s, sessionID, wf, tdb, collector, budget, j, mockRunner, logger)
+	result, err := sr.RunSprint(context.Background(), 1, 1)
+	if err != nil {
+		t.Fatalf("RunSprint: %v", err)
+	}
+	if result.TasksAttempted != 2 {
+		t.Errorf("expected 2 tasks attempted, got %d", result.TasksAttempted)
+	}
+	if result.TasksCompleted != 2 {
+		t.Errorf("expected 2 tasks completed, got %d", result.TasksCompleted)
+	}
+}
+
+func TestSprintRunner_RunSprint_TaskFailure(t *testing.T) {
+	s, sessionID, collector, budget, j, logger := setupTestSupervisorDeps(t)
+	cfg := DefaultConfig()
+	cfg.SprintSize = 2
+	cfg.JournalEnabled = false
+	cfg.MaxConsecutiveFails = 10 // high to not trigger abort
+
+	tdb := taskdb.New()
+	if err := tdb.Add(&taskdb.Task{ID: "t-1", Title: "Failing", Status: taskdb.StatusPending, MaxAttempts: 3}); err != nil {
+		t.Fatalf("Add t-1: %v", err)
+	}
+	if err := tdb.Add(&taskdb.Task{ID: "t-2", Title: "Passing", Status: taskdb.StatusPending, MaxAttempts: 3}); err != nil {
+		t.Fatalf("Add t-2: %v", err)
+	}
+
+	if err := s.InsertTask(&store.Task{ID: "t-1", SessionID: sessionID, Title: "Failing", Status: "pending", MaxAttempts: 3}); err != nil {
+		t.Fatalf("InsertTask t-1: %v", err)
+	}
+	if err := s.InsertTask(&store.Task{ID: "t-2", SessionID: sessionID, Title: "Passing", Status: "pending", MaxAttempts: 3}); err != nil {
+		t.Fatalf("InsertTask t-2: %v", err)
+	}
+
+	mockRunner := &MockAgentRunner{
+		results: []*ralph.IterationResult{
+			{TaskID: "t-1", Success: false, Error: "compile error"},
+			{TaskID: "t-2", Success: true, Output: "done"},
+		},
+	}
+
+	dir := t.TempDir()
+	wf := workflow.NewGitWorkflow("", dir, logger)
+
+	sr := NewSprintRunner(cfg, s, sessionID, wf, tdb, collector, budget, j, mockRunner, logger)
+	result, err := sr.RunSprint(context.Background(), 1, 1)
+	if err != nil {
+		t.Fatalf("RunSprint: %v", err)
+	}
+	if result.TasksFailed != 1 {
+		t.Errorf("expected 1 failed, got %d", result.TasksFailed)
+	}
+	if result.TasksCompleted != 1 {
+		t.Errorf("expected 1 completed, got %d", result.TasksCompleted)
+	}
+}
+
+func TestSprintRunner_RunSprint_ConsecutiveFailAbort(t *testing.T) {
+	s, sessionID, collector, budget, j, logger := setupTestSupervisorDeps(t)
+	cfg := DefaultConfig()
+	cfg.SprintSize = 5
+	cfg.MaxConsecutiveFails = 2
+	cfg.JournalEnabled = false
+
+	tdb := taskdb.New()
+	for i := 1; i <= 5; i++ {
+		id := fmt.Sprintf("t-%d", i)
+		if err := tdb.Add(&taskdb.Task{ID: id, Title: "Task", Status: taskdb.StatusPending, MaxAttempts: 5}); err != nil {
+			t.Fatalf("Add %s: %v", id, err)
+		}
+		if err := s.InsertTask(&store.Task{ID: id, SessionID: sessionID, Title: "Task", Status: "pending", MaxAttempts: 5}); err != nil {
+			t.Fatalf("InsertTask %s: %v", id, err)
+		}
+	}
+
+	// Only 2 failures needed — sprint aborts at MaxConsecutiveFails=2.
+	mockRunner := &MockAgentRunner{
+		results: []*ralph.IterationResult{
+			{TaskID: "t-1", Success: false, Error: "fail 1"},
+			{TaskID: "t-2", Success: false, Error: "fail 2"},
+		},
+	}
+
+	dir := t.TempDir()
+	wf := workflow.NewGitWorkflow("", dir, logger)
+
+	sr := NewSprintRunner(cfg, s, sessionID, wf, tdb, collector, budget, j, mockRunner, logger)
+	result, _ := sr.RunSprint(context.Background(), 1, 1)
+	if !result.AbortedEarly {
+		t.Error("expected sprint to abort early due to consecutive failures")
+	}
+	if !strings.Contains(result.AbortReason, "consecutive failures") {
+		t.Errorf("expected abort reason to mention consecutive failures, got %q", result.AbortReason)
+	}
+	// Should have attempted 2 (stopped at max consecutive fails)
+	if result.TasksAttempted != 2 {
+		t.Errorf("expected 2 tasks attempted before abort, got %d", result.TasksAttempted)
+	}
+}
+
+func TestSprintRunner_RunSprint_CancelledContext(t *testing.T) {
+	s, sessionID, collector, budget, j, logger := setupTestSupervisorDeps(t)
+	cfg := DefaultConfig()
+	cfg.SprintSize = 5
+	cfg.JournalEnabled = false
+
+	tdb := taskdb.New()
+	if err := tdb.Add(&taskdb.Task{ID: "t-1", Title: "Task", Status: taskdb.StatusPending, MaxAttempts: 3}); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	if err := s.InsertTask(&store.Task{ID: "t-1", SessionID: sessionID, Title: "Task", Status: "pending", MaxAttempts: 3}); err != nil {
+		t.Fatalf("InsertTask: %v", err)
+	}
+
+	// Cancel context before running.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	sr := NewSprintRunner(cfg, s, sessionID, nil, tdb, collector, budget, j, nil, logger)
+	result, err := sr.RunSprint(ctx, 1, 1)
+	if err == nil {
+		t.Fatal("expected error from cancelled context")
+	}
+	if result != nil && !result.AbortedEarly {
+		t.Error("expected sprint to be aborted early")
+	}
+}
+
+func TestSprintRunner_RunSprint_BudgetExceeded(t *testing.T) {
+	s, sessionID, collector, _, j, logger := setupTestSupervisorDeps(t)
+	cfg := DefaultConfig()
+	cfg.SprintSize = 5
+	cfg.JournalEnabled = false
+
+	// Set tiny budget.
+	tinyBudget := metrics.Budget{MaxTokens: 1, WarnThreshold: 0.8}
+	budget := metrics.NewBudgetEnforcer(tinyBudget)
+
+	// Pre-load usage to exceed budget.
+	if err := s.RecordUsage(&store.ResourceUsage{SessionID: sessionID, Iteration: 1, EstimatedTokens: 100}); err != nil {
+		t.Fatalf("RecordUsage: %v", err)
+	}
+
+	tdb := taskdb.New()
+	if err := tdb.Add(&taskdb.Task{ID: "t-1", Title: "Task", Status: taskdb.StatusPending, MaxAttempts: 3}); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	if err := s.InsertTask(&store.Task{ID: "t-1", SessionID: sessionID, Title: "Task", Status: "pending", MaxAttempts: 3}); err != nil {
+		t.Fatalf("InsertTask: %v", err)
+	}
+
+	sr := NewSprintRunner(cfg, s, sessionID, nil, tdb, collector, budget, j, nil, logger)
+	result, _ := sr.RunSprint(context.Background(), 1, 1)
+	if result == nil {
+		t.Fatal("expected non-nil result")
+	}
+	if !result.BudgetExceeded {
+		t.Error("expected budget exceeded")
+	}
+	if !result.AbortedEarly {
+		t.Error("expected abort early")
+	}
+}
+
+func TestSprintRunner_CurrentIteration(t *testing.T) {
+	s, sessionID, collector, budget, j, logger := setupTestSupervisorDeps(t)
+	cfg := DefaultConfig()
+
+	sr := NewSprintRunner(cfg, s, sessionID, nil, taskdb.New(), collector, budget, j, nil, logger)
+
+	// Run empty sprint starting at iteration 5.
+	sr.RunSprint(context.Background(), 1, 5)
+	if sr.CurrentIteration() != 5 {
+		t.Errorf("expected current iteration 5, got %d", sr.CurrentIteration())
+	}
+}
+
+func TestWriteSprintRetroEntry(t *testing.T) {
+	s, sessionID, collector, budget, j, logger := setupTestSupervisorDeps(t)
+	cfg := DefaultConfig()
+	cfg.JournalEnabled = true
+
+	sr := NewSprintRunner(cfg, s, sessionID, nil, taskdb.New(), collector, budget, j, nil, logger)
+	sr.sprintNum = 1
+	sr.iteration = 5
+
+	report := &retro.SprintReport{
+		SprintNumber:   1,
+		TasksAttempted: 3,
+		TasksCompleted: 2,
+		Velocity:       0.67,
+		QualityTrend:   "improving",
+		TestPassRate:   0.9,
+		Patterns: []retro.Pattern{
+			{Type: retro.PatternHighVelocity, Description: "good velocity"},
+		},
+		Recommendations: []retro.Recommendation{
+			{Action: retro.RecUpdateContext, Description: "add more context"},
+		},
+	}
+
+	sr.writeSprintRetroEntry(report)
+
+	entries, err := s.JournalEntries(sessionID, &store.JournalQuery{Kind: "sprint_retro"})
+	if err != nil {
+		t.Fatalf("JournalEntries: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 retro entry, got %d", len(entries))
+	}
+	if !strings.Contains(entries[0].Reflection, "Velocity") {
+		t.Error("expected retro reflection to mention velocity")
+	}
+	if !strings.Contains(entries[0].Reflection, "Patterns detected") {
+		t.Error("expected retro reflection to mention patterns")
+	}
+	if !strings.Contains(entries[0].Reflection, "Recommendations") {
+		t.Error("expected retro reflection to mention recommendations")
+	}
+}
+
+func TestNoopAgentRunner_RunTask(t *testing.T) {
+	runner := &NoopAgentRunner{}
+	task := &ralph.Task{ID: "t-1", Title: "test"}
+	result := runner.RunTask(context.Background(), task, "some prompt")
+	if result.Success {
+		t.Error("expected NoopAgentRunner to return failure")
+	}
+	if result.TaskID != "t-1" {
+		t.Errorf("expected task ID t-1, got %q", result.TaskID)
+	}
+	if result.Error == "" {
+		t.Error("expected error message from NoopAgentRunner")
+	}
+}
+
+func TestContextBuilder_BuildPrompt_WithFailingTests(t *testing.T) {
+	s := openTestStore(t)
+	sessionID, _ := s.CreateSession("", "main", "")
+
+	// Insert a completed task.
+	if err := s.InsertTask(&store.Task{
+		ID: "t-1", SessionID: sessionID, Title: "Setup", Status: "completed", MaxAttempts: 3,
+	}); err != nil {
+		t.Fatalf("InsertTask: %v", err)
+	}
+
+	// Add failing test data.
+	for i := 1; i <= 3; i++ {
+		if err := s.RecordQuality(&store.QualitySnapshot{
+			SessionID:       sessionID,
+			Iteration:       i,
+			OverallPass:     false,
+			TestTotal:       10,
+			TestFailed:      2,
+			FailedTestsJSON: `["TestAuth", "TestDB"]`,
+		}); err != nil {
+			t.Fatalf("RecordQuality(%d): %v", i, err)
+		}
+	}
+
+	cb := NewContextBuilder(s, sessionID)
+	task := &taskdb.Task{
+		ID:          "t-2",
+		Title:       "Fix auth",
+		Description: "Fix authentication",
+		MaxAttempts: 3,
+	}
+	prompt := cb.BuildPrompt(task, "test-project")
+
+	if !strings.Contains(prompt, "Known Failing Tests") {
+		t.Error("expected prompt to contain failing tests section")
+	}
+	if !strings.Contains(prompt, "TestAuth") {
+		t.Error("expected prompt to mention TestAuth")
+	}
+}
+
+func TestContextBuilder_BuildPrompt_WithAcceptanceCriteria(t *testing.T) {
+	s := openTestStore(t)
+	sessionID, _ := s.CreateSession("", "main", "")
+
+	cb := NewContextBuilder(s, sessionID)
+	task := &taskdb.Task{
+		ID:          "t-1",
+		Title:       "Add auth",
+		Description: "Add authentication",
+		MaxAttempts: 3,
+		AcceptanceCriteria: []taskdb.AcceptanceCriteria{
+			{Description: "Tests pass", Command: "go test ./..."},
+			{Description: "Lint clean"},
+		},
+		ContextNotes: "Use JWT tokens",
+	}
+	prompt := cb.BuildPrompt(task, "test-project")
+
+	if !strings.Contains(prompt, "Acceptance Criteria") {
+		t.Error("expected acceptance criteria section")
+	}
+	if !strings.Contains(prompt, "go test ./...") {
+		t.Error("expected verify command in prompt")
+	}
+	if !strings.Contains(prompt, "Additional Context") {
+		t.Error("expected context notes section")
+	}
+	if !strings.Contains(prompt, "JWT tokens") {
+		t.Error("expected context notes content")
+	}
+}
+
+func TestSprintRunner_RunIteration_Success(t *testing.T) {
+	s, sessionID, collector, budget, j, logger := setupTestSupervisorDeps(t)
+	cfg := DefaultConfig()
+	cfg.JournalEnabled = true
+	cfg.AutoCommit = false // Don't try git operations
+
+	tdb := taskdb.New()
+	task := &taskdb.Task{ID: "t-1", Title: "Task 1", Status: taskdb.StatusPending, MaxAttempts: 3}
+	if err := tdb.Add(task); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	if err := s.InsertTask(&store.Task{ID: "t-1", SessionID: sessionID, Title: "Task 1", Status: "pending", MaxAttempts: 3}); err != nil {
+		t.Fatalf("InsertTask: %v", err)
+	}
+
+	mockRunner := &MockAgentRunner{
+		results: []*ralph.IterationResult{
+			{TaskID: "t-1", Success: true, Output: "completed task"},
+		},
+	}
+
+	dir := t.TempDir()
+	wf := workflow.NewGitWorkflow("", dir, logger)
+
+	sr := NewSprintRunner(cfg, s, sessionID, wf, tdb, collector, budget, j, mockRunner, logger)
+	sr.sprintNum = 1
+	sr.iteration = 1
+
+	success := sr.runIteration(context.Background(), task)
+	if !success {
+		t.Error("expected iteration to succeed")
+	}
+	if task.Status != taskdb.StatusCompleted {
+		t.Errorf("expected task completed, got %s", task.Status)
+	}
+
+	// Verify attempt was recorded.
+	attempts, _ := s.GetAttempts("t-1")
+	if len(attempts) != 1 {
+		t.Errorf("expected 1 attempt recorded, got %d", len(attempts))
+	}
+}
+
+func TestSprintRunner_RunIteration_Failure(t *testing.T) {
+	s, sessionID, collector, budget, j, logger := setupTestSupervisorDeps(t)
+	cfg := DefaultConfig()
+	cfg.JournalEnabled = true
+	cfg.AutoCommit = false
+
+	tdb := taskdb.New()
+	task := &taskdb.Task{ID: "t-1", Title: "Failing task", Status: taskdb.StatusPending, MaxAttempts: 3}
+	if err := tdb.Add(task); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	if err := s.InsertTask(&store.Task{ID: "t-1", SessionID: sessionID, Title: "Failing task", Status: "pending", MaxAttempts: 3}); err != nil {
+		t.Fatalf("InsertTask: %v", err)
+	}
+
+	mockRunner := &MockAgentRunner{
+		results: []*ralph.IterationResult{
+			{TaskID: "t-1", Success: false, Error: "compilation failed", Output: "error log"},
+		},
+	}
+
+	dir := t.TempDir()
+	wf := workflow.NewGitWorkflow("", dir, logger)
+
+	sr := NewSprintRunner(cfg, s, sessionID, wf, tdb, collector, budget, j, mockRunner, logger)
+	sr.sprintNum = 1
+	sr.iteration = 1
+
+	success := sr.runIteration(context.Background(), task)
+	if success {
+		t.Error("expected iteration to fail")
+	}
+	// Task should NOT be completed.
+	if task.Status == taskdb.StatusCompleted {
+		t.Error("expected task to not be completed after failure")
+	}
+}
+
+func TestImportPRD(t *testing.T) {
+	dir := t.TempDir()
+	cfg := DefaultConfig()
+	cfg.WorkDir = dir
+
+	sup, err := New(cfg, testLogger())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer sup.Store().Close()
+
+	// Create a worktree path with a PRD file.
+	worktreeDir := t.TempDir()
+	sup.workflow = workflow.NewGitWorkflow("", worktreeDir, testLogger())
+	// Manually set the worktree path field (internal field).
+	// Since we can't directly set the private worktreePath, we use RepoDir() as fallback.
+	// Write PRD to the base dir (which workDir() returns when no worktree is set).
+	prdContent := `{
+		"name": "Test Project",
+		"tasks": [
+			{"id": "t-1", "title": "Setup", "description": "Set up project", "status": "pending", "priority": 1},
+			{"id": "t-2", "title": "Core", "description": "Core logic", "status": "pending", "priority": 2, "depends_on": ["t-1"]}
+		]
+	}`
+	prdPath := worktreeDir + "/prd.json"
+	if err := os.WriteFile(prdPath, []byte(prdContent), 0644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	cfg.PRDFile = prdPath
+
+	if err := sup.importPRD(); err != nil {
+		t.Fatalf("importPRD: %v", err)
+	}
+
+	total, _, _, _, _ := sup.taskDB.Stats()
+	if total != 2 {
+		t.Errorf("expected 2 tasks imported, got %d", total)
+	}
+
+	// Verify tasks in store.
+	tasks, _ := sup.Store().ListTasks(sup.SessionID())
+	if len(tasks) != 2 {
+		t.Errorf("expected 2 tasks in store, got %d", len(tasks))
+	}
+
+	// Verify dependencies in store.
+	deps, _ := sup.Store().GetDependencies("t-2")
+	if len(deps) != 1 || deps[0] != "t-1" {
+		t.Errorf("expected t-2 depends on [t-1], got %v", deps)
+	}
+}
+
+func TestSetup_Integration(t *testing.T) {
+	prdContent := `{"name":"Test","tasks":[{"id":"t-1","title":"Setup","description":"Setup","status":"pending","priority":1}]}`
+	repoDir := initGitRepo(t, map[string]string{"prd.json": prdContent})
+
+	// Create supervisor with this repo.
+	cfg := DefaultConfig()
+	cfg.WorkDir = repoDir
+	cfg.BranchName = "feat/test-setup"
+	cfg.JournalEnabled = true
+
+	sup, err := New(cfg, testLogger())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer sup.Store().Close()
+
+	ctx := context.Background()
+	if err := sup.setup(ctx); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+
+	// Verify tasks were imported.
+	total, _, _, _, _ := sup.taskDB.Stats()
+	if total != 1 {
+		t.Errorf("expected 1 task imported, got %d", total)
+	}
+
+	// Verify session is still running.
+	sess, _ := sup.Store().GetSession(sup.SessionID())
+	if sess.Status != "running" {
+		t.Errorf("expected session running, got %s", sess.Status)
+	}
+}
+
+func TestRun_CancelledContext(t *testing.T) {
+	prdContent := `{"name":"Test","tasks":[{"id":"t-1","title":"Task","description":"Do it","status":"pending","priority":1}]}`
+	repoDir := initGitRepo(t, map[string]string{"prd.json": prdContent})
+
+	cfg := DefaultConfig()
+	cfg.WorkDir = repoDir
+	cfg.BranchName = "feat/test-cancel"
+	cfg.JournalEnabled = false
+	cfg.ReviewEnabled = false
+
+	sup, err := New(cfg, testLogger())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	// Cancel context immediately.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	err = sup.Run(ctx)
+	if err == nil {
+		t.Fatal("expected error from cancelled context")
+	}
+}
+
+func TestFinalize_Basic(t *testing.T) {
+	repoDir := initGitRepo(t, nil)
+
+	cfg := DefaultConfig()
+	cfg.WorkDir = repoDir
+	cfg.BranchName = "feat/test-finalize"
+	cfg.JournalEnabled = true
+	cfg.ReviewEnabled = false
+
+	sup, err := New(cfg, testLogger())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer sup.Store().Close()
+
+	// Setup first to create worktree.
+	prdContent := `{"name":"Test","tasks":[{"id":"t-1","title":"Task","description":"Do it","status":"pending","priority":1}]}`
+	gitCommitFile(t, repoDir, "prd.json", prdContent, "add prd")
+
+	ctx := context.Background()
+	if err := sup.setup(ctx); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+
+	// Finalize — will fail on OpenPR (no remote), but should handle gracefully.
+	err = sup.finalize(ctx)
+	if err != nil {
+		t.Fatalf("finalize: %v", err)
+	}
+
+	// Verify session marked as completed.
+	sess, _ := sup.Store().GetSession(sup.SessionID())
+	if sess.Status != "completed" {
+		t.Errorf("expected session completed, got %s", sess.Status)
+	}
+}
+
+func TestRunReviewGate_WithReviewer_NoDiff(t *testing.T) {
+	// Test runReviewGate when reviewer is set but diff fails (no remote).
+	repoDir := initGitRepo(t, nil)
+
+	cfg := DefaultConfig()
+	cfg.WorkDir = repoDir
+	cfg.BranchName = "feat/review-gate-test"
+	cfg.ReviewEnabled = true
+	cfg.JournalEnabled = false
+
+	sup, err := New(cfg, testLogger())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer sup.Store().Close()
+
+	// Set up workflow with worktree.
+	ctx := context.Background()
+	if err := sup.workflow.CloneOrOpen(ctx); err != nil {
+		t.Fatalf("CloneOrOpen: %v", err)
+	}
+	if err := sup.workflow.CreateWorktree(ctx, "feat/review-gate-test"); err != nil {
+		t.Fatalf("CreateWorktree: %v", err)
+	}
+
+	// Set a fake reviewer (with nil container — will fail on Review call).
+	sup.reviewer = NewFakeReviewer()
+
+	// This should handle the diff error gracefully (no remote = diff fails).
+	sup.runReviewGate(ctx) // Should not panic.
+}
+
+// NewFakeReviewer creates a reviewer that would fail but tests the non-nil path.
+func NewFakeReviewer() *review.Reviewer {
+	return review.NewReviewer("fake-reviewer", nil, nil, testLogger())
+}
+
+func TestRun_CompletesAllTasks(t *testing.T) {
+	prdContent := `{"name":"Test","tasks":[{"id":"t-1","title":"Easy task","description":"Do easy thing","status":"pending","priority":1}]}`
+	repoDir := initGitRepo(t, map[string]string{"prd.json": prdContent})
+
+	cfg := DefaultConfig()
+	cfg.WorkDir = repoDir
+	cfg.BranchName = "feat/test-run-complete"
+	cfg.JournalEnabled = false
+	cfg.ReviewEnabled = false
+	cfg.MaxSprints = 1
+	cfg.SprintSize = 3
+
+	sup, err := New(cfg, testLogger())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	// Can't fully test Run because it calls setup which clones, then finalize which tries OpenPR.
+	// But we can test the sprint loop portion indirectly via setup + manual sprint runner.
+	ctx := context.Background()
+	if err := sup.setup(ctx); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+
+	// All tasks should be imported.
+	total, _, _, _, _ := sup.taskDB.Stats()
+	if total != 1 {
+		t.Errorf("expected 1 task, got %d", total)
+	}
+}
+
+func TestApply_SplitTask(t *testing.T) {
+	s := openTestStore(t)
+	sessionID, _ := s.CreateSession("", "main", "")
+	logger := testLogger()
+	ac := NewAdaptiveController(s, sessionID, nil, logger)
+
+	recs := []retro.Recommendation{
+		{Action: retro.RecSplitTask, TaskID: "t-1", Description: "split into subtasks"},
+	}
+	actions := ac.Apply(recs)
+	if len(actions) != 1 {
+		t.Errorf("expected 1 action, got %d", len(actions))
+	}
+	if !strings.Contains(actions[0], "split task") {
+		t.Errorf("expected split task action, got %q", actions[0])
+	}
+}
+
+// ScriptedAgentRunner implements AgentRunner with predefined per-task results.
+// It tracks call order for assertions.
+type ScriptedAgentRunner struct {
+	results map[string]*ralph.IterationResult
+	mu      sync.Mutex
+	calls   []string // task IDs in order of execution
+}
+
+func NewScriptedAgentRunner(results map[string]*ralph.IterationResult) *ScriptedAgentRunner {
+	return &ScriptedAgentRunner{results: results}
+}
+
+// Calls returns a copy of the recorded task IDs under lock.
+func (s *ScriptedAgentRunner) Calls() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]string, len(s.calls))
+	copy(out, s.calls)
+	return out
+}
+
+func (s *ScriptedAgentRunner) RunTask(_ context.Context, task *ralph.Task, _ string) *ralph.IterationResult {
+	s.mu.Lock()
+	s.calls = append(s.calls, task.ID)
+	s.mu.Unlock()
+	if r, ok := s.results[task.ID]; ok {
+		return r
+	}
+	return &ralph.IterationResult{
+		TaskID:  task.ID,
+		Success: false,
+		Error:   "no scripted result for task " + task.ID,
+	}
+}
+
+func TestFullSprintLifecycle(t *testing.T) {
+	// This end-to-end test exercises the full supervisor pipeline:
+	// setup → sprint execution → retro → adaptive → finalize.
+	//
+	// We use a real git repo, real SQLite (in-memory), and a ScriptedAgentRunner
+	// that returns success for some tasks and failure for others.
+
+	// --- Arrange ---
+
+	// PRD with 3 tasks: t-1 succeeds, t-2 fails, t-3 succeeds.
+	// t-2 failing exercises the retro/adaptive path.
+	prdContent := `{
+		"name": "Integration Test",
+		"tasks": [
+			{"id": "t-1", "title": "Setup auth", "description": "Add authentication", "status": "pending", "priority": 1},
+			{"id": "t-2", "title": "Add caching", "description": "Implement caching layer", "status": "pending", "priority": 2},
+			{"id": "t-3", "title": "Add logging", "description": "Structured logging", "status": "pending", "priority": 3}
+		]
+	}`
+	repoDir := initGitRepo(t, map[string]string{"prd.json": prdContent})
+
+	cfg := DefaultConfig()
+	cfg.WorkDir = repoDir
+	cfg.BranchName = "feat/lifecycle-test"
+	cfg.JournalEnabled = true
+	cfg.ReviewEnabled = false // No reviewer configured; skip review gate.
+	cfg.AutoCommit = false    // Don't attempt git commits from sprint runner.
+	cfg.MaxSprints = 2
+	cfg.SprintSize = 3
+	cfg.MaxConsecutiveFails = 10 // High to avoid early abort.
+
+	sup, err := New(cfg, testLogger())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	// Note: Run() closes the store, but we call phases manually so close explicitly.
+	defer sup.Store().Close()
+
+	ctx := context.Background()
+
+	// Phase 1: Setup (clone/open repo, create worktree, import PRD).
+	if err := sup.setup(ctx); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+
+	// Verify tasks were imported.
+	total, _, _, _, _ := sup.taskDB.Stats()
+	if total != 3 {
+		t.Fatalf("expected 3 tasks imported, got %d", total)
+	}
+
+	// Create scripted runner: t-1 succeeds, t-2 fails, t-3 succeeds.
+	scripted := NewScriptedAgentRunner(map[string]*ralph.IterationResult{
+		"t-1": {TaskID: "t-1", Success: true, Output: "auth implemented"},
+		"t-2": {TaskID: "t-2", Success: false, Error: "cache dependency missing"},
+		"t-3": {TaskID: "t-3", Success: true, Output: "logging added"},
+	})
+
+	// Phase 2: Sprint loop.
+	// NOTE: This loop intentionally mirrors the structure of supervisor.go:Run()
+	// (setup → sprint loop → finalize). If Run()'s loop condition or phase
+	// ordering changes, this test must be kept in sync.
+	iteration := 1
+	for sprint := 1; sprint <= cfg.MaxSprints; sprint++ {
+		if sup.taskDB.IsComplete() {
+			break
+		}
+
+		runner := NewSprintRunner(
+			cfg, sup.store, sup.sessionID,
+			sup.workflow, sup.taskDB, sup.collector, sup.budget, sup.journal, scripted, sup.logger,
+		)
+
+		result, err := runner.RunSprint(ctx, sprint, iteration)
+		if err != nil {
+			t.Fatalf("RunSprint(%d): %v", sprint, err)
+		}
+		iteration = runner.CurrentIteration()
+
+		if result.BudgetExceeded {
+			t.Fatal("unexpected budget exceeded")
+		}
+		if result.AbortedEarly {
+			t.Fatalf("unexpected early abort in sprint %d: %s", sprint, result.AbortReason)
+		}
+	}
+
+	// Phase 4: Finalize.
+	if err := sup.finalize(ctx); err != nil {
+		t.Fatalf("finalize: %v", err)
+	}
+
+	// --- Assert ---
+
+	// 1. Session was created and completed.
+	sess, err := sup.Store().GetSession(sup.SessionID())
+	if err != nil {
+		t.Fatalf("GetSession: %v", err)
+	}
+	if sess.Status != "completed" {
+		t.Errorf("expected session status 'completed', got %q", sess.Status)
+	}
+
+	// 2. Tasks were executed (verify each expected task was called).
+	wantCalled := map[string]bool{"t-1": true, "t-2": true, "t-3": true}
+	gotCalled := map[string]bool{}
+	for _, id := range scripted.Calls() {
+		gotCalled[id] = true
+	}
+	for id := range wantCalled {
+		if !gotCalled[id] {
+			t.Errorf("expected task %s to be called, but it wasn't", id)
+		}
+	}
+
+	// 3. Verify task statuses in store.
+	tasks, err := sup.Store().ListTasks(sup.SessionID())
+	if err != nil {
+		t.Fatalf("ListTasks: %v", err)
+	}
+
+	statusByID := make(map[string]string)
+	for _, task := range tasks {
+		statusByID[task.ID] = task.Status
+	}
+
+	if statusByID["t-1"] != "completed" {
+		t.Errorf("expected t-1 completed, got %q", statusByID["t-1"])
+	}
+	if statusByID["t-3"] != "completed" {
+		t.Errorf("expected t-3 completed, got %q", statusByID["t-3"])
+	}
+	// t-2 should not be completed (it failed).
+	if statusByID["t-2"] == "completed" {
+		t.Error("expected t-2 NOT completed, but it was")
+	}
+
+	// 4. Attempts were recorded for each task.
+	for _, taskID := range []string{"t-1", "t-2", "t-3"} {
+		attempts, err := sup.Store().GetAttempts(taskID)
+		if err != nil {
+			t.Fatalf("GetAttempts(%s): %v", taskID, err)
+		}
+		if len(attempts) == 0 {
+			t.Errorf("expected at least 1 attempt for %s", taskID)
+		}
+	}
+
+	// 5. Journal entries exist for task starts, completions, failures.
+	allEntries, err := sup.Store().JournalEntries(sup.SessionID(), nil)
+	if err != nil {
+		t.Fatalf("JournalEntries: %v", err)
+	}
+	if len(allEntries) == 0 {
+		t.Fatal("expected journal entries, got none")
+	}
+
+	kindCounts := make(map[string]int)
+	for _, e := range allEntries {
+		kindCounts[e.Kind]++
+	}
+
+	// Should have task_start entries.
+	if kindCounts[string(journal.KindTaskStart)] == 0 {
+		t.Error("expected task_start journal entries")
+	}
+	// Should have task_complete entries (t-1 and t-3 succeeded).
+	if kindCounts[string(journal.KindTaskComplete)] == 0 {
+		t.Error("expected task_complete journal entries")
+	}
+	// Should have task_failed entries (t-2 failed).
+	if kindCounts[string(journal.KindTaskFailed)] == 0 {
+		t.Error("expected task_failed journal entries")
+	}
+	// Should have sprint_retro entries.
+	if kindCounts[string(journal.KindSprintRetro)] == 0 {
+		t.Error("expected sprint_retro journal entries")
+	}
+	// Should have final_wrap_up entry (from finalize).
+	if kindCounts[string(journal.KindFinalWrapUp)] == 0 {
+		t.Error("expected final_wrap_up journal entry")
+	}
+
+	// 6. Sprint reports were saved.
+	reports, err := sup.Store().SprintReports(sup.SessionID())
+	if err != nil {
+		t.Fatalf("SprintReports: %v", err)
+	}
+	if len(reports) == 0 {
+		t.Error("expected at least one sprint report saved")
+	}
+
+	// 7. Verify at least one sprint report has task data.
+	// The retro analyzer uses iteration ranges to count attempts, so not all
+	// sprint reports may show tasks (due to attempt number vs iteration mismatch).
+	hasTaskData := false
+	for _, r := range reports {
+		if r.TasksAttempted > 0 {
+			hasTaskData = true
+		}
+	}
+	if !hasTaskData {
+		t.Error("expected at least one sprint report with tasks attempted > 0")
+	}
+}
+
+func TestAdaptiveController_WriteEscalation(t *testing.T) {
+	s, err := store.Open(":memory:")
+	if err != nil {
+		t.Fatalf("opening store: %v", err)
+	}
+	defer s.Close()
+
+	sessionID, _ := s.CreateSession("", "main", "")
+	logger := testLogger()
+	ac := NewAdaptiveController(s, sessionID, nil, logger)
+
+	dir := t.TempDir()
+	err = ac.WriteEscalation(context.Background(), dir, "System is stuck on auth module")
+	if err != nil {
+		t.Fatalf("WriteEscalation: %v", err)
+	}
+
+	data, err := os.ReadFile(dir + "/.agentbox/escalations.md")
+	if err != nil {
+		t.Fatalf("reading escalation file: %v", err)
+	}
+	if !strings.Contains(string(data), "System is stuck on auth module") {
+		t.Error("expected escalation message in file")
+	}
+}
+
+func TestNewForResume_LoadsSessionAndTasks(t *testing.T) {
+	s := openTestStore(t)
+
+	cfgJSON := `{"sprint_size":3,"max_sprints":10,"agent":"claude","branch_name":"feat/test","journal_enabled":false,"review_enabled":false}`
+	sessionID, err := s.CreateSession("", "feat/test", cfgJSON)
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+
+	// Mark as interrupted.
+	if err := s.UpdateSessionStatus(sessionID, "interrupted"); err != nil {
+		t.Fatalf("UpdateSessionStatus: %v", err)
+	}
+
+	// Insert tasks: one completed, one pending.
+	if err := s.InsertTask(&store.Task{
+		ID: "t-1", SessionID: sessionID, Title: "Done", Status: "completed", MaxAttempts: 3,
+	}); err != nil {
+		t.Fatalf("InsertTask t-1: %v", err)
+	}
+	if err := s.InsertTask(&store.Task{
+		ID: "t-2", SessionID: sessionID, Title: "Pending", Status: "pending", MaxAttempts: 3,
+	}); err != nil {
+		t.Fatalf("InsertTask t-2: %v", err)
+	}
+
+	// Add a dependency: t-2 depends on t-1.
+	if err := s.AddDependency("t-2", "t-1"); err != nil {
+		t.Fatalf("AddDependency: %v", err)
+	}
+
+	// Record an attempt on t-1.
+	success := true
+	now := time.Now()
+	if _, err := s.RecordAttempt(&store.Attempt{
+		TaskID: "t-1", SessionID: sessionID, Number: 1, AgentName: "claude",
+		StartedAt: now, CompletedAt: &now, Success: &success, TokensUsed: 100,
+	}); err != nil {
+		t.Fatalf("RecordAttempt: %v", err)
+	}
+
+	// Add sprint report and resource usage for iteration tracking.
+	if err := s.SaveSprintReport(&store.SprintReport{
+		SessionID: sessionID, SprintNumber: 2,
+	}); err != nil {
+		t.Fatalf("SaveSprintReport: %v", err)
+	}
+	if err := s.RecordUsage(&store.ResourceUsage{
+		SessionID: sessionID, Iteration: 5, EstimatedTokens: 500,
+	}); err != nil {
+		t.Fatalf("RecordUsage: %v", err)
+	}
+
+	logger := testLogger()
+	// Use internal constructor to inject the already-open store.
+	sup, err := newForResumeWithStore(s, sessionID, t.TempDir(), logger)
+	if err != nil {
+		t.Fatalf("newForResumeWithStore: %v", err)
+	}
+
+	// Verify session ID.
+	if sup.SessionID() != sessionID {
+		t.Errorf("expected session ID %d, got %d", sessionID, sup.SessionID())
+	}
+
+	// Verify config was restored.
+	if sup.cfg.SprintSize != 3 {
+		t.Errorf("expected sprint size 3, got %d", sup.cfg.SprintSize)
+	}
+	if sup.cfg.Agent != "claude" {
+		t.Errorf("expected agent 'claude', got %q", sup.cfg.Agent)
+	}
+
+	// Verify task DB was restored.
+	total, completed, pending, _, _ := sup.taskDB.Stats()
+	if total != 2 {
+		t.Errorf("expected 2 tasks, got %d", total)
+	}
+	if completed != 1 {
+		t.Errorf("expected 1 completed, got %d", completed)
+	}
+	if pending != 1 {
+		t.Errorf("expected 1 pending, got %d", pending)
+	}
+
+	// Verify completed task has its attempt.
+	task1, ok := sup.taskDB.Get("t-1")
+	if !ok {
+		t.Fatal("expected task t-1 in taskDB")
+	}
+	if len(task1.Attempts) != 1 {
+		t.Errorf("expected 1 attempt on t-1, got %d", len(task1.Attempts))
+	}
+
+	// Verify dependencies were restored.
+	task2, ok := sup.taskDB.Get("t-2")
+	if !ok {
+		t.Fatal("expected task t-2 in taskDB")
+	}
+	if len(task2.DependsOn) != 1 || task2.DependsOn[0] != "t-1" {
+		t.Errorf("expected t-2 to depend on t-1, got %v", task2.DependsOn)
+	}
+
+	// Verify session is still "interrupted" — status changes to "running"
+	// only when Resume() is actually called, not in the constructor.
+	sess, err := s.GetSession(sessionID)
+	if err != nil {
+		t.Fatalf("GetSession: %v", err)
+	}
+	if sess.Status != "interrupted" {
+		t.Errorf("expected session status 'interrupted' (not updated until Resume), got %q", sess.Status)
+	}
+}
+
+func TestNewForResume_RejectsCompletedSession(t *testing.T) {
+	s := openTestStore(t)
+	sessionID, _ := s.CreateSession("", "main", `{}`)
+	_ = s.UpdateSessionStatus(sessionID, "completed")
+
+	_, err := newForResumeWithStore(s, sessionID, t.TempDir(), testLogger())
+	if err == nil {
+		t.Fatal("expected error for completed session")
+	}
+	if !strings.Contains(err.Error(), "not resumable") {
+		t.Errorf("expected 'not resumable' error, got: %v", err)
+	}
+}
+
+func TestNewForResume_RejectsFailedSession(t *testing.T) {
+	s := openTestStore(t)
+	sessionID, _ := s.CreateSession("", "main", `{}`)
+	_ = s.UpdateSessionStatus(sessionID, "failed")
+
+	_, err := newForResumeWithStore(s, sessionID, t.TempDir(), testLogger())
+	if err == nil {
+		t.Fatal("expected error for failed session")
+	}
+	if !strings.Contains(err.Error(), "not resumable") {
+		t.Errorf("expected 'not resumable' error, got: %v", err)
+	}
+}
+
+func TestNewForResume_RejectsRunningSession(t *testing.T) {
+	s := openTestStore(t)
+	sessionID, _ := s.CreateSession("", "main", `{}`)
+	// Default status is "running" — should not be resumable to avoid
+	// concurrent writers.
+
+	_, err := newForResumeWithStore(s, sessionID, t.TempDir(), testLogger())
+	if err == nil {
+		t.Fatal("expected error for running session")
+	}
+	if !strings.Contains(err.Error(), "not resumable") {
+		t.Errorf("expected 'not resumable' error, got: %v", err)
+	}
+}
+
+func TestResume_SkipsCompletedTasks(t *testing.T) {
+	s := openTestStore(t)
+
+	cfgJSON := `{"sprint_size":2,"max_sprints":1,"agent":"claude","journal_enabled":false,"review_enabled":false}`
+	sessionID, _ := s.CreateSession("", "feat/resume-test", cfgJSON)
+	_ = s.UpdateSessionStatus(sessionID, "interrupted")
+
+	// t-1 is already completed.
+	_ = s.InsertTask(&store.Task{
+		ID: "t-1", SessionID: sessionID, Title: "Done", Status: "completed", MaxAttempts: 3,
+	})
+	// t-2 is still pending.
+	_ = s.InsertTask(&store.Task{
+		ID: "t-2", SessionID: sessionID, Title: "Pending", Status: "pending", MaxAttempts: 3,
+	})
+
+	logger := testLogger()
+	sup, err := newForResumeWithStore(s, sessionID, t.TempDir(), logger)
+	if err != nil {
+		t.Fatalf("newForResumeWithStore: %v", err)
+	}
+
+	// Set DryRun so we don't need Docker.
+	sup.cfg.DryRun = true
+
+	ctx := context.Background()
+	err = sup.Resume(ctx)
+	if err != nil {
+		t.Fatalf("Resume: %v", err)
+	}
+
+	// Verify t-1 is still completed (wasn't re-run).
+	task1, _ := sup.taskDB.Get("t-1")
+	if task1.Status != taskdb.StatusCompleted {
+		t.Errorf("expected t-1 to remain completed, got %s", task1.Status)
+	}
+}
+
+func TestRun_InterruptMarksSessionInterrupted(t *testing.T) {
+	prdContent := `{"name":"Test","tasks":[{"id":"t-1","title":"Slow Task","description":"Takes a while","status":"pending","priority":1}]}`
+	repoDir := initGitRepo(t, map[string]string{"prd.json": prdContent})
+
+	cfg := DefaultConfig()
+	cfg.WorkDir = repoDir
+	cfg.BranchName = "feat/test-interrupt"
+	cfg.DryRun = true
+	cfg.JournalEnabled = false
+	cfg.ReviewEnabled = false
+	cfg.MaxSprints = 5
+	cfg.SprintSize = 5
+
+	sup, err := New(cfg, testLogger())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	// Cancel immediately so the sprint loop exits on the context check.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	err = sup.Run(ctx)
+	// Should get context.Canceled.
+	if err == nil {
+		t.Fatal("expected error from cancelled context")
+	}
+
+	// Re-open the store to verify status (Run() closes it).
+	dbPath := repoDir + "/.agentbox/agentbox.db"
+	st, err := store.Open(dbPath)
+	if err != nil {
+		t.Fatalf("re-opening store: %v", err)
+	}
+	defer st.Close()
+
+	sess, err := st.GetSession(sup.SessionID())
+	if err != nil {
+		t.Fatalf("GetSession: %v", err)
+	}
+	if sess.Status != "interrupted" {
+		t.Errorf("expected session status 'interrupted', got %q", sess.Status)
+	}
+}

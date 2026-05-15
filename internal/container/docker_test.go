@@ -1,0 +1,645 @@
+package container
+
+import (
+	"archive/tar"
+	"bytes"
+	"context"
+	"io"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/swamp-dev/agentbox/internal/config"
+)
+
+func TestImageName(t *testing.T) {
+	tests := []struct {
+		input    string
+		expected string
+	}{
+		{"node", "agentbox/node:20"},
+		{"python", "agentbox/python:3.12"},
+		{"go", "agentbox/go:1.24"},
+		{"rust", "agentbox/rust:1.77"},
+		{"full", "agentbox/full:latest"},
+		{"custom:tag", "custom:tag"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			result := ImageName(tt.input)
+			if result != tt.expected {
+				t.Errorf("ImageName(%s) = %s, want %s", tt.input, result, tt.expected)
+			}
+		})
+	}
+}
+
+func TestParseMemory(t *testing.T) {
+	tests := []struct {
+		input    string
+		expected int64
+		wantErr  bool
+	}{
+		{"4g", 4 * 1024 * 1024 * 1024, false},
+		{"512m", 512 * 1024 * 1024, false},
+		{"1024k", 1024 * 1024, false},
+		{"1024", 1024, false},
+		{"", 0, false},
+		{"invalid", 0, true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			result, err := ParseMemory(tt.input)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("ParseMemory(%s) error = %v, wantErr %v", tt.input, err, tt.wantErr)
+			}
+			if result != tt.expected {
+				t.Errorf("ParseMemory(%s) = %d, want %d", tt.input, result, tt.expected)
+			}
+		})
+	}
+}
+
+func TestParseCPUs(t *testing.T) {
+	tests := []struct {
+		input    string
+		expected float64
+		wantErr  bool
+	}{
+		{"2", 2.0, false},
+		{"0.5", 0.5, false},
+		{"1.5", 1.5, false},
+		{"", 0, false},
+		{"invalid", 0, true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			result, err := ParseCPUs(tt.input)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("ParseCPUs(%s) error = %v, wantErr %v", tt.input, err, tt.wantErr)
+			}
+			if result != tt.expected {
+				t.Errorf("ParseCPUs(%s) = %f, want %f", tt.input, result, tt.expected)
+			}
+		})
+	}
+}
+
+func TestConfigToContainerConfig(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Project.Name = "test-project"
+	cfg.Docker.Image = "node"
+	cfg.Docker.Resources.Memory = "2g"
+	cfg.Docker.Resources.CPUs = "1"
+	cfg.Docker.Network = "none"
+
+	projectDir := t.TempDir()
+
+	containerCfg, err := ConfigToContainerConfig(cfg, projectDir, []string{"claude"}, []string{"KEY=value"})
+	if err != nil {
+		t.Fatalf("ConfigToContainerConfig() error = %v", err)
+	}
+
+	if containerCfg.Image != "agentbox/node:20" {
+		t.Errorf("expected image agentbox/node:20, got %s", containerCfg.Image)
+	}
+
+	if containerCfg.Memory != 2*1024*1024*1024 {
+		t.Errorf("expected memory 2GB, got %d", containerCfg.Memory)
+	}
+
+	if containerCfg.CPUs != 1.0 {
+		t.Errorf("expected 1 CPU, got %f", containerCfg.CPUs)
+	}
+
+	if containerCfg.Network != "none" {
+		t.Errorf("expected network none, got %s", containerCfg.Network)
+	}
+
+	if len(containerCfg.Cmd) != 1 || containerCfg.Cmd[0] != "claude" {
+		t.Errorf("expected cmd [claude], got %v", containerCfg.Cmd)
+	}
+
+	if len(containerCfg.Env) != 1 || containerCfg.Env[0] != "KEY=value" {
+		t.Errorf("expected env [KEY=value], got %v", containerCfg.Env)
+	}
+
+	if containerCfg.Interactive {
+		t.Error("expected Interactive=false by default")
+	}
+}
+
+func TestConfigToContainerConfigInvalidMemory(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Docker.Resources.Memory = "invalid"
+
+	projectDir := t.TempDir()
+	_, err := ConfigToContainerConfig(cfg, projectDir, nil, nil)
+	if err == nil {
+		t.Error("expected error for invalid memory")
+	}
+}
+
+func TestConfigToContainerConfigInvalidCPU(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Docker.Resources.CPUs = "invalid"
+
+	projectDir := t.TempDir()
+	_, err := ConfigToContainerConfig(cfg, projectDir, nil, nil)
+	if err == nil {
+		t.Error("expected error for invalid CPU")
+	}
+}
+
+func TestValidateProjectPath(t *testing.T) {
+	tests := []struct {
+		name    string
+		path    string
+		wantErr bool
+	}{
+		{"valid temp dir", t.TempDir(), false},
+		{"nonexistent", "/nonexistent/path/12345", true},
+		{"etc blocked", "/etc", true},
+		{"etc subdir blocked", "/etc/nginx", true},
+		{"root exact blocked", "/root", true},
+		{"proc blocked", "/proc", true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := ValidateProjectPath(tt.path)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("ValidateProjectPath(%s) error = %v, wantErr %v", tt.path, err, tt.wantErr)
+			}
+		})
+	}
+
+	// /root subdirectories should be allowed (path must exist on disk)
+	t.Run("root subdir allowed", func(t *testing.T) {
+		subdir := t.TempDir() // creates under /tmp, but test the logic directly
+		// Create a real subdir under /root if we're running as root
+		if home, err := os.UserHomeDir(); err == nil && home == "/root" {
+			testDir := "/root/agentbox-test-validate"
+			if err := os.MkdirAll(testDir, 0o755); err == nil {
+				defer os.Remove(testDir)
+				if err := ValidateProjectPath(testDir); err != nil {
+					t.Errorf("ValidateProjectPath(%s) should be allowed for /root subdirs, got: %v", testDir, err)
+				}
+				return
+			}
+		}
+		// Fallback: just verify temp dir works
+		if err := ValidateProjectPath(subdir); err != nil {
+			t.Errorf("ValidateProjectPath(%s) error = %v", subdir, err)
+		}
+	})
+}
+
+func TestConfigToContainerConfigAllowedEndpoints(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Docker.Image = "full"
+	cfg.Docker.Network = "restricted"
+	cfg.Docker.Resources.Memory = "2g"
+	cfg.Docker.Resources.CPUs = "1"
+	cfg.Docker.AllowedEndpoints = []string{"api.anthropic.com:443", "pypi.org:443"}
+
+	containerCfg, err := ConfigToContainerConfig(cfg, t.TempDir(), []string{"echo"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if containerCfg.Network != "restricted" {
+		t.Errorf("Network = %s, want restricted", containerCfg.Network)
+	}
+	if len(containerCfg.AllowedEndpoints) != 2 {
+		t.Fatalf("AllowedEndpoints = %v, want 2 entries", containerCfg.AllowedEndpoints)
+	}
+	if containerCfg.AllowedEndpoints[0] != "api.anthropic.com:443" {
+		t.Errorf("AllowedEndpoints[0] = %s", containerCfg.AllowedEndpoints[0])
+	}
+}
+
+func TestConfigToContainerConfigInteractiveDefault(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Docker.Image = "full"
+	cfg.Docker.Resources.Memory = "2g"
+	cfg.Docker.Resources.CPUs = "1"
+
+	containerCfg, err := ConfigToContainerConfig(cfg, t.TempDir(), []string{"echo"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if containerCfg.Interactive {
+		t.Error("expected Interactive=false by default from ConfigToContainerConfig")
+	}
+}
+
+func TestConfigToContainerConfigClaudeCLIMount(t *testing.T) {
+	tests := []struct {
+		agent string
+		want  bool
+	}{
+		{"claude-cli", true},
+		{"claude", false},
+		{"aider", false},
+		{"amp", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.agent, func(t *testing.T) {
+			cfg := config.DefaultConfig()
+			cfg.Agent.Name = tt.agent
+			cfg.Docker.Image = "node"
+			cfg.Docker.Resources.Memory = "2g"
+			cfg.Docker.Resources.CPUs = "1"
+			containerCfg, err := ConfigToContainerConfig(cfg, t.TempDir(), []string{"test"}, nil)
+			if err != nil {
+				t.Fatalf("error = %v", err)
+			}
+			if containerCfg.MountClaudeConfig != tt.want {
+				t.Errorf("MountClaudeConfig = %v, want %v", containerCfg.MountClaudeConfig, tt.want)
+			}
+		})
+	}
+}
+
+func TestWrapCmdForAgent(t *testing.T) {
+	tests := []struct {
+		name string
+		cmd  []string
+		want string // substring that must appear in the wrapped shell command
+	}{
+		{
+			name: "bash -c command",
+			cmd:  []string{"bash", "-c", "claude --dangerously-skip-permissions -p 'hello'"},
+			want: "claude --dangerously-skip-permissions",
+		},
+		{
+			name: "direct command",
+			cmd:  []string{"amp", "--message", "fix bug"},
+			want: "amp",
+		},
+		{
+			name: "single command",
+			cmd:  []string{"echo", "hello"},
+			want: "echo",
+		},
+		{
+			name: "newline in argument does not break quoting",
+			cmd:  []string{"amp", "--message", "fix bug\nrm -rf /"},
+			want: "fix bug",
+		},
+		{
+			name: "bash -c with 4 args",
+			cmd:  []string{"bash", "-c", "echo hello", "agentbox"},
+			want: "echo hello",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			wrapped := wrapCmdForAgent(tt.cmd)
+			// Should always be bash -c <script>
+			if len(wrapped) != 3 || wrapped[0] != "bash" || wrapped[1] != "-c" {
+				t.Fatalf("expected [bash -c ...], got %v", wrapped)
+			}
+			script := wrapped[2]
+			if !strings.Contains(script, "chown -R agent:agent /workspace") {
+				t.Errorf("expected chown in script, got: %s", script)
+			}
+			if !strings.Contains(script, tt.want) {
+				t.Errorf("expected %q in script, got: %s", tt.want, script)
+			}
+			// For direct commands (not bash -c), all arguments should be
+			// single-quoted to prevent injection via shell metacharacters.
+			if tt.name == "newline in argument does not break quoting" {
+				// The newline-containing arg must be inside single quotes.
+				if !strings.Contains(script, "'fix bug") {
+					t.Errorf("newline arg should be single-quoted in script: %s", script)
+				}
+			}
+		})
+	}
+}
+
+func TestAppendGitConfig(t *testing.T) {
+	tests := []struct {
+		name    string
+		env     []string
+		key     string
+		value   string
+		wantIdx int
+		wantEnv []string
+	}{
+		{
+			name:    "empty env",
+			env:     nil,
+			key:     "safe.directory",
+			value:   "/workspace",
+			wantIdx: 0,
+			wantEnv: []string{
+				"GIT_CONFIG_COUNT=1",
+				"GIT_CONFIG_KEY_0=safe.directory",
+				"GIT_CONFIG_VALUE_0=/workspace",
+			},
+		},
+		{
+			name:    "existing non-git env",
+			env:     []string{"HOME=/home/agent", "PATH=/usr/bin"},
+			key:     "safe.directory",
+			value:   "/workspace",
+			wantIdx: 0,
+			wantEnv: []string{
+				"HOME=/home/agent",
+				"PATH=/usr/bin",
+				"GIT_CONFIG_COUNT=1",
+				"GIT_CONFIG_KEY_0=safe.directory",
+				"GIT_CONFIG_VALUE_0=/workspace",
+			},
+		},
+		{
+			name: "merges with existing git config",
+			env: []string{
+				"GIT_CONFIG_COUNT=1",
+				"GIT_CONFIG_KEY_0=user.name",
+				"GIT_CONFIG_VALUE_0=Agent",
+			},
+			key:     "safe.directory",
+			value:   "/workspace",
+			wantIdx: 1,
+			wantEnv: []string{
+				"GIT_CONFIG_COUNT=2",
+				"GIT_CONFIG_KEY_0=user.name",
+				"GIT_CONFIG_VALUE_0=Agent",
+				"GIT_CONFIG_KEY_1=safe.directory",
+				"GIT_CONFIG_VALUE_1=/workspace",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Copy input to avoid aliasing.
+			var input []string
+			if tt.env != nil {
+				input = make([]string, len(tt.env))
+				copy(input, tt.env)
+			}
+
+			idx, got := appendGitConfig(input, tt.key, tt.value)
+			if idx != tt.wantIdx {
+				t.Errorf("index = %d, want %d", idx, tt.wantIdx)
+			}
+			if len(got) != len(tt.wantEnv) {
+				t.Fatalf("env length = %d, want %d\ngot:  %v\nwant: %v", len(got), len(tt.wantEnv), got, tt.wantEnv)
+			}
+			for i := range got {
+				if got[i] != tt.wantEnv[i] {
+					t.Errorf("env[%d] = %q, want %q", i, got[i], tt.wantEnv[i])
+				}
+			}
+		})
+	}
+}
+
+func TestAppendGitConfig_DoesNotAliasCaller(t *testing.T) {
+	// Ensure the input slice is not mutated when it has spare capacity.
+	original := make([]string, 1, 10)
+	original[0] = "FOO=bar"
+
+	snapshot := original[0]
+	_, _ = appendGitConfig(original, "safe.directory", "/workspace")
+
+	if original[0] != snapshot {
+		t.Errorf("caller's slice was mutated: got %q, want %q", original[0], snapshot)
+	}
+	if len(original) != 1 {
+		t.Errorf("caller's slice length changed: got %d, want 1", len(original))
+	}
+}
+
+func TestRunWritableWorkspace(t *testing.T) {
+	if testing.Short() || !dockerAvailable() {
+		t.Skip("skipping: requires Docker")
+	}
+
+	cm, err := NewManager()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cm.Close()
+
+	cfg := &ContainerConfig{
+		Name:        "agentbox-test-writable",
+		Image:       "agentbox/full:latest",
+		WorkDir:     "/workspace",
+		ProjectPath: t.TempDir(),
+		Cmd:         []string{"bash", "-c", "touch /workspace/testfile && echo ok"},
+		Network:     "none",
+	}
+
+	output, err := cm.Run(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("Run() error = %v\nOutput: %s", err, output)
+	}
+	if !strings.Contains(output, "ok") {
+		t.Errorf("expected 'ok' in output, got %q", output)
+	}
+
+	// Verify the file was actually created on the host.
+	if _, err := os.Stat(filepath.Join(cfg.ProjectPath, "testfile")); err != nil {
+		t.Errorf("testfile not created on host: %v", err)
+	}
+}
+
+func dockerAvailable() bool {
+	cm, err := NewManager()
+	if err != nil {
+		return false
+	}
+	defer cm.Close()
+
+	// Also check that the test image exists — CI has Docker but no agentbox images.
+	_, _, err = cm.client.ImageInspectWithRaw(context.Background(), "agentbox/full:latest")
+	return err == nil
+}
+
+func TestRunNonInteractiveOutput(t *testing.T) {
+	if testing.Short() || !dockerAvailable() {
+		t.Skip("skipping: requires Docker")
+	}
+
+	cm, err := NewManager()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cm.Close()
+
+	cfg := &ContainerConfig{
+		Name:        "agentbox-test-noninteractive",
+		Image:       "agentbox/full:latest",
+		WorkDir:     "/tmp",
+		ProjectPath: t.TempDir(),
+		Cmd:         []string{"echo", "hello world"},
+		Network:     "none",
+		Interactive: false,
+	}
+
+	ctx := context.Background()
+	output, err := cm.Run(ctx, cfg)
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+
+	if !strings.Contains(output, "hello world") {
+		t.Errorf("expected output to contain 'hello world', got %q", output)
+	}
+}
+
+func TestRunGitSafeDirectoryEnv(t *testing.T) {
+	if testing.Short() || !dockerAvailable() {
+		t.Skip("skipping: requires Docker")
+	}
+
+	cm, err := NewManager()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cm.Close()
+
+	// Create a temp dir with a git repo so git commands have something to work with.
+	projectDir := t.TempDir()
+	for _, args := range [][]string{
+		{"git", "init", projectDir},
+		{"git", "-C", projectDir, "commit", "--allow-empty", "-m", "init"},
+	} {
+		out, err := exec.Command(args[0], args[1:]...).CombinedOutput()
+		if err != nil {
+			t.Fatalf("%v failed: %s", args, out)
+		}
+	}
+
+	cfg := &ContainerConfig{
+		Name:        "agentbox-test-git-safe-dir",
+		Image:       "agentbox/full:latest",
+		WorkDir:     "/workspace",
+		ProjectPath: projectDir,
+		Cmd:         []string{"bash", "-c", "git status && echo git-ok"},
+		Network:     "none",
+	}
+
+	output, err := cm.Run(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("Run() error = %v\nOutput: %s", err, output)
+	}
+	if !strings.Contains(output, "git-ok") {
+		t.Errorf("expected 'git-ok' in output (git safe.directory should be set), got %q", output)
+	}
+}
+
+func TestRunInteractiveOutput(t *testing.T) {
+	if testing.Short() || !dockerAvailable() {
+		t.Skip("skipping: requires Docker")
+	}
+
+	cm, err := NewManager()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cm.Close()
+
+	cfg := &ContainerConfig{
+		Name:        "agentbox-test-interactive",
+		Image:       "agentbox/full:latest",
+		WorkDir:     "/tmp",
+		ProjectPath: t.TempDir(),
+		Cmd:         []string{"echo", "hello interactive"},
+		Network:     "none",
+		Interactive: true,
+	}
+
+	ctx := context.Background()
+	output, err := cm.Run(ctx, cfg)
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+
+	if !strings.Contains(output, "hello interactive") {
+		t.Errorf("expected output to contain 'hello interactive', got %q", output)
+	}
+}
+
+func TestCopyFileToContainerTarFormat(t *testing.T) {
+	// Test the tar archive construction without Docker.
+	// We call the tar-building logic directly and verify the header.
+	content := []byte(`{"test": "credentials"}`)
+	uid, gid := 1000, 1000
+
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+	err := tw.WriteHeader(&tar.Header{
+		Name: ".credentials.json",
+		Size: int64(len(content)),
+		Mode: 0o600,
+		Uid:  uid,
+		Gid:  gid,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tw.Write(content); err != nil {
+		t.Fatal(err)
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	// Read back and verify
+	tr := tar.NewReader(&buf)
+	hdr, err := tr.Next()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hdr.Name != ".credentials.json" {
+		t.Errorf("Name = %s, want .credentials.json", hdr.Name)
+	}
+	if hdr.Uid != uid || hdr.Gid != gid {
+		t.Errorf("UID/GID = %d/%d, want %d/%d", hdr.Uid, hdr.Gid, uid, gid)
+	}
+	if hdr.Mode != 0o600 {
+		t.Errorf("Mode = %o, want 600", hdr.Mode)
+	}
+	data, err := io.ReadAll(tr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != string(content) {
+		t.Errorf("content = %q, want %q", string(data), string(content))
+	}
+}
+
+func TestStripANSI(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{"plain text", "hello world", "hello world"},
+		{"cursor show", "\x1b[?25hhello", "hello"},
+		{"color codes", "\x1b[32mgreen\x1b[0m", "green"},
+		{"mixed", "before\x1b[1;31mred\x1b[0mafter", "beforeredafter"},
+		{"empty", "", ""},
+		{"no escapes", "just plain text\nwith newlines\n", "just plain text\nwith newlines\n"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := stripANSI(tt.input)
+			if got != tt.want {
+				t.Errorf("stripANSI(%q) = %q, want %q", tt.input, got, tt.want)
+			}
+		})
+	}
+}

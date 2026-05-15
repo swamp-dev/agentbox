@@ -1,0 +1,100 @@
+# Security Policy
+
+## Reporting a Vulnerability
+
+If you discover a security vulnerability in agentbox, please report it responsibly:
+
+1. **Do not** open a public GitHub issue for security vulnerabilities
+2. Email details to the maintainers (see repository for contact info)
+3. Include steps to reproduce the vulnerability
+4. Allow reasonable time for a fix before public disclosure
+
+## Security Model
+
+Agentbox provides defense-in-depth isolation for running AI coding agents:
+
+### Container Isolation
+
+| Resource | Protection |
+|----------|------------|
+| Filesystem | Only `/workspace` (your project) accessible |
+| Network | Disabled by default; `--allow-network` uses egress-restricted mode |
+| Processes | Separate PID namespace |
+| User | Runs as non-root `agent` user (UID 1000) |
+| Docker | No access to host docker.sock |
+
+### Host Exposure
+
+The following are exposed to containers (read-only):
+
+- **SSH keys** (`~/.ssh`): For git operations requiring authentication
+- **Git config** (`~/.gitconfig`): For commit author information
+- **API keys**: Passed via environment variables
+
+### What Agents Can Do
+
+Within the mounted project directory, agents can:
+
+- Read, create, modify, and delete any file
+- Execute commands (tests, builds, etc.)
+- Make commits to git (if auto-commit enabled)
+
+### Quality Check Commands
+
+Quality check commands in `agentbox.yaml` are validated against an allowlist. Only the base command name (first word) is checked. The following commands are allowed:
+
+**JavaScript/TypeScript:** `npm`, `npx`, `pnpm`, `yarn`, `bun`
+**Go:** `go`
+**Rust:** `cargo`, `rustc`
+**Python:** `python`, `python3`, `pytest`, `pip`
+**Build tools:** `make`, `gradle`, `mvn`
+**Linters/Test runners:** `eslint`, `prettier`, `tsc`, `jest`, `vitest`, `mocha`
+
+For example, `npm test` and `go build ./...` are accepted, but `bash scripts/check.sh` or `curl localhost` are rejected. To run custom scripts, wrap them in a `make` target or `npm` script.
+
+See [docs/troubleshooting.md](docs/troubleshooting.md#quality-check-allowlist) for workarounds and more examples.
+
+## Known Limitations
+
+### Not Protected Against
+
+1. **Malicious project code**: If your project contains malicious code that runs during tests/builds, it will execute
+2. **Resource exhaustion**: Set memory/CPU limits in config to prevent runaway processes
+3. **Expensive API calls**: Agents may make many API calls; monitor your usage
+4. **Data in project directory**: Agents can read/modify all project files
+
+### Trust Requirements
+
+- **Config files**: Only use `agentbox.yaml` from trusted sources
+- **PRD files**: Task definitions are used to prompt agents
+- **Docker images**: Use official agentbox images or build your own from provided Dockerfiles
+
+### Egress-Restricted Networking
+
+When network access is required (e.g., `claude-cli` for subscription auth), agentbox uses a **restricted egress** mode instead of unrestricted bridge networking:
+
+1. A Docker network with `Internal: true` is created — containers on it have no default route to the internet
+2. A proxy sidecar container runs on both the internal network and the default bridge
+3. The proxy enforces a domain allowlist — only approved endpoints (e.g., `api.anthropic.com:443`) are reachable
+4. The agent container is placed on the internal network only — even tools that ignore `HTTP_PROXY` cannot reach external hosts
+
+Each agent has sensible default endpoints. Users can add custom endpoints with `--allow-endpoint host:port`. For unrestricted access, use `--network bridge` (explicit opt-in).
+
+## Best Practices
+
+1. **Review changes**: Always review agent-generated code before committing to production
+2. **Use git branches**: Run agents on feature branches, not main
+3. **Limit network access**: Keep default `network: none` unless API access required; when network is needed, prefer `restricted` over `bridge`
+4. **Set resource limits**: Configure memory and CPU limits
+5. **Monitor API usage**: Watch for unexpected API consumption
+6. **Audit quality checks**: Only add commands you trust to quality_checks
+
+## Supported Versions
+
+| Version | Supported |
+|---------|-----------|
+| 0.x.x   | ✓ (development) |
+
+## Security Updates
+
+Security updates will be released as patch versions. Subscribe to repository releases for notifications.

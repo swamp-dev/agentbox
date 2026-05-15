@@ -1,0 +1,309 @@
+package supervisor
+
+import (
+	"bytes"
+	"context"
+	"fmt"
+	"log/slog"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"time"
+
+	"github.com/swamp-dev/agentbox/internal/journal"
+	"github.com/swamp-dev/agentbox/internal/retro"
+	"github.com/swamp-dev/agentbox/internal/store"
+	"github.com/swamp-dev/agentbox/internal/taskdb"
+)
+
+// CommandExecutor abstracts command execution for testing.
+type CommandExecutor interface {
+	// Execute runs a command and returns its combined stdout, or an error.
+	Execute(ctx context.Context, dir string, name string, args ...string) (string, error)
+}
+
+// execCommandExecutor is the real implementation that runs exec.CommandContext.
+type execCommandExecutor struct{}
+
+func (e *execCommandExecutor) Execute(ctx context.Context, dir string, name string, args ...string) (string, error) {
+	cmd := exec.CommandContext(ctx, name, args...)
+	if dir != "" {
+		cmd.Dir = dir
+	}
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return "", fmt.Errorf("%s: %s: %w", name, stderr.String(), err)
+	}
+	return stdout.String(), nil
+}
+
+// AdaptiveController applies retrospective recommendations.
+type AdaptiveController struct {
+	store     *store.Store
+	sessionID int64
+	taskDB    *taskdb.DB
+	logger    *slog.Logger
+
+	// Fallback agent switching.
+	fallbackAgent     string
+	switchRecommended bool
+	switched          bool // idempotency guard — only switch once per session
+	journal           *journal.Journal
+
+	// Escalation settings.
+	escalationMethod string          // "github_issue", "file", "none"
+	cmdExecutor      CommandExecutor // injectable for testing gh CLI calls
+}
+
+// NewAdaptiveController creates a new adaptive controller.
+// The taskDB parameter is optional; if nil, task reordering and splitting are no-ops.
+func NewAdaptiveController(s *store.Store, sessionID int64, tdb *taskdb.DB, logger *slog.Logger) *AdaptiveController {
+	return &AdaptiveController{store: s, sessionID: sessionID, taskDB: tdb, logger: logger}
+}
+
+// SetFallbackAgent configures the fallback agent name.
+func (ac *AdaptiveController) SetFallbackAgent(name string) {
+	ac.fallbackAgent = name
+}
+
+// SetJournal configures the journal for writing agent-switch entries.
+func (ac *AdaptiveController) SetJournal(j *journal.Journal) {
+	ac.journal = j
+}
+
+// SetEscalationMethod configures how escalations are delivered.
+// Valid values: "github_issue", "file", "none". Default is "file".
+func (ac *AdaptiveController) SetEscalationMethod(method string) {
+	ac.escalationMethod = method
+}
+
+// SetCommandExecutor overrides the command executor (used for testing).
+func (ac *AdaptiveController) SetCommandExecutor(executor CommandExecutor) {
+	ac.cmdExecutor = executor
+}
+
+// SwitchRecommended returns whether an agent switch was recommended and the
+// target agent name. The recommendation is cleared after reading.
+func (ac *AdaptiveController) SwitchRecommended() (bool, string) {
+	if ac.switchRecommended {
+		ac.switchRecommended = false
+		return true, ac.fallbackAgent
+	}
+	return false, ""
+}
+
+// Apply processes recommendations and returns actions taken.
+func (ac *AdaptiveController) Apply(recs []retro.Recommendation) []string {
+	var actions []string
+
+	for _, rec := range recs {
+		switch rec.Action {
+		case retro.RecDeferTask:
+			if rec.TaskID != "" {
+				if err := ac.store.UpdateTaskStatus(rec.TaskID, "deferred"); err == nil {
+					actions = append(actions, fmt.Sprintf("Deferred task %s: %s", rec.TaskID, rec.Description))
+					ac.logger.Info("deferred task", "task_id", rec.TaskID)
+				}
+			}
+
+		case retro.RecSkipTask:
+			if rec.TaskID != "" {
+				if err := ac.store.UpdateTaskStatus(rec.TaskID, "deferred"); err == nil {
+					actions = append(actions, fmt.Sprintf("Skipped task %s: %s", rec.TaskID, rec.Description))
+					ac.logger.Info("skipped task", "task_id", rec.TaskID)
+				}
+			}
+
+		case retro.RecUpdateContext:
+			// Append failure pattern info to the task's context notes.
+			if rec.TaskID != "" {
+				task, err := ac.store.GetTask(rec.TaskID)
+				if err == nil {
+					note := fmt.Sprintf("\n[Retro %s] %s", time.Now().Format("2006-01-02 15:04"), rec.Description)
+					newNotes := task.ContextNotes + note
+					if err := ac.store.UpdateTaskContextNotes(rec.TaskID, newNotes); err == nil {
+						actions = append(actions, fmt.Sprintf("Updated context for task %s", rec.TaskID))
+						ac.logger.Info("updated task context", "task_id", rec.TaskID, "note", note)
+					}
+				}
+			}
+
+		case retro.RecSwitchAgent:
+			if ac.fallbackAgent != "" && !ac.switched {
+				ac.switchRecommended = true
+				ac.switched = true
+				actions = append(actions, fmt.Sprintf("Recommended agent switch to %s: %s", ac.fallbackAgent, rec.Description))
+				ac.logger.Info("agent switch recommended", "agent", ac.fallbackAgent, "reason", rec.Description)
+
+				if ac.journal != nil {
+					if err := ac.journal.Add(&store.JournalEntry{
+						Kind:       string(journal.KindAgentSwitch),
+						Summary:    fmt.Sprintf("Agent switch recommended to %s", ac.fallbackAgent),
+						Reflection: fmt.Sprintf("Adaptive controller recommends switching to fallback agent %q. Reason: %s", ac.fallbackAgent, rec.Description),
+					}); err != nil {
+						ac.logger.Warn("failed to write agent switch journal entry", "error", err)
+					}
+				}
+			} else if ac.switched {
+				actions = append(actions, fmt.Sprintf("Agent switch already applied, skipping: %s", rec.Description))
+				ac.logger.Info("agent switch already applied, ignoring duplicate recommendation", "reason", rec.Description)
+			} else {
+				actions = append(actions, fmt.Sprintf("Recommendation: switch agent — %s", rec.Description))
+				ac.logger.Warn("agent switch recommended but no fallback configured", "reason", rec.Description)
+			}
+
+		case retro.RecRollback:
+			actions = append(actions, fmt.Sprintf("Recommendation: rollback — %s", rec.Description))
+			ac.logger.Warn("rollback recommended", "reason", rec.Description)
+
+		case retro.RecEscalate:
+			actions = append(actions, fmt.Sprintf("Escalation: %s", rec.Description))
+			ac.logger.Warn("escalation needed", "reason", rec.Description)
+
+		case retro.RecReorderTasks:
+			if ac.taskDB != nil && rec.TaskID != "" {
+				// Atomically adjust priority so other tasks run first.
+				// Higher priority number = lower priority in NextTask() sorting.
+				newPriority, err := ac.taskDB.AdjustPriority(rec.TaskID, 10)
+				if err == nil {
+					actions = append(actions, fmt.Sprintf("Deprioritized task %s (priority → %d): %s", rec.TaskID, newPriority, rec.Description))
+					ac.logger.Info("deprioritized task", "task_id", rec.TaskID, "new_priority", newPriority)
+				} else {
+					actions = append(actions, fmt.Sprintf("Recommendation: reorder tasks — %s", rec.Description))
+				}
+			} else {
+				actions = append(actions, fmt.Sprintf("Recommendation: reorder tasks — %s", rec.Description))
+			}
+
+		case retro.RecSplitTask:
+			if ac.taskDB != nil && rec.TaskID != "" {
+				task, ok := ac.taskDB.Get(rec.TaskID)
+				if ok {
+					subtasks := ac.generateSubtasks(task, rec.Description)
+					if err := ac.taskDB.SplitTask(rec.TaskID, subtasks); err == nil {
+						subtaskIDs := make([]string, len(subtasks))
+						for i, st := range subtasks {
+							subtaskIDs[i] = st.ID
+						}
+						actions = append(actions, fmt.Sprintf("Split task %s into %d subtasks (%s): %s",
+							rec.TaskID, len(subtasks), strings.Join(subtaskIDs, ", "), rec.Description))
+						ac.logger.Info("split task", "task_id", rec.TaskID, "subtasks", len(subtasks))
+					} else {
+						actions = append(actions, fmt.Sprintf("Recommendation: split task — %s (error: %v)", rec.Description, err))
+						ac.logger.Warn("failed to split task", "task_id", rec.TaskID, "error", err)
+					}
+				} else {
+					actions = append(actions, fmt.Sprintf("Recommendation: split task — %s", rec.Description))
+				}
+			} else {
+				actions = append(actions, fmt.Sprintf("Recommendation: split task — %s", rec.Description))
+			}
+		}
+	}
+
+	return actions
+}
+
+// generateSubtasks creates subtasks from a parent task for splitting.
+// It divides the work into smaller pieces based on the task's description.
+func (ac *AdaptiveController) generateSubtasks(parent *taskdb.Task, description string) []*taskdb.Task {
+	// Generate 2 subtasks from the parent task.
+	return []*taskdb.Task{
+		{
+			ID:          parent.ID + "-part1",
+			Title:       parent.Title + " (part 1)",
+			Description: fmt.Sprintf("First part of: %s. Context: %s", parent.Description, description),
+			Status:      taskdb.StatusPending,
+			Priority:    parent.Priority,
+			MaxAttempts: parent.MaxAttempts,
+		},
+		{
+			ID:          parent.ID + "-part2",
+			Title:       parent.Title + " (part 2)",
+			Description: fmt.Sprintf("Second part of: %s. Context: %s", parent.Description, description),
+			Status:      taskdb.StatusPending,
+			Priority:    parent.Priority,
+			MaxAttempts: parent.MaxAttempts,
+		},
+	}
+}
+
+// WriteEscalation routes an escalation message based on the configured method.
+// It returns an optional result string (e.g., the issue URL for github_issue).
+func (ac *AdaptiveController) WriteEscalation(ctx context.Context, workDir, message string) error {
+	method := ac.escalationMethod
+	if method == "" {
+		method = "file"
+	}
+
+	switch method {
+	case "none":
+		ac.logger.Warn("escalation (log only)", "message", message)
+		return nil
+
+	case "github_issue":
+		url, err := ac.createGitHubIssue(ctx, workDir, message)
+		if err != nil {
+			return fmt.Errorf("creating GitHub issue: %w", err)
+		}
+		ac.logger.Info("escalation created as GitHub issue", "url", url)
+		return nil
+
+	default: // "file"
+		return ac.writeEscalationFile(workDir, message)
+	}
+}
+
+// writeEscalationFile appends an escalation message to the local escalation log.
+func (ac *AdaptiveController) writeEscalationFile(workDir, message string) error {
+	path := filepath.Join(workDir, ".agentbox", "escalations.md")
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		return err
+	}
+
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	entry := fmt.Sprintf("\n## %s\n\n%s\n", time.Now().Format("2006-01-02 15:04:05"), message)
+	_, err = f.WriteString(entry)
+	return err
+}
+
+// createGitHubIssue creates a GitHub issue with escalation details via gh CLI.
+func (ac *AdaptiveController) createGitHubIssue(ctx context.Context, workDir, message string) (string, error) {
+	executor := ac.cmdExecutor
+	if executor == nil {
+		executor = &execCommandExecutor{}
+	}
+
+	title := "agentbox escalation: " + truncate(message, 60)
+	body := fmt.Sprintf("## Escalation\n\n**Time:** %s\n\n%s\n\n---\n_Created automatically by agentbox_",
+		time.Now().Format("2006-01-02 15:04:05"), message)
+
+	execCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
+	out, err := executor.Execute(execCtx, workDir, "gh", "issue", "create",
+		"--title", title,
+		"--body", body,
+	)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(out), nil
+}
+
+// truncate shortens a string to maxLen runes, adding "..." if truncated.
+func truncate(s string, maxLen int) string {
+	runes := []rune(s)
+	if len(runes) <= maxLen {
+		return s
+	}
+	return string(runes[:maxLen-3]) + "..."
+}
