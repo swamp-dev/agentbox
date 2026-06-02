@@ -192,3 +192,67 @@ func TestTestStatsPassRate(t *testing.T) {
 		t.Errorf("expected 0 for empty stats")
 	}
 }
+
+func TestDefaultBudget(t *testing.T) {
+	b := DefaultBudget()
+
+	if b.MaxTokens <= 0 {
+		t.Errorf("expected positive MaxTokens, got %d", b.MaxTokens)
+	}
+	if b.MaxDuration <= 0 {
+		t.Error("expected positive MaxDuration")
+	}
+	if b.MaxIterations <= 0 {
+		t.Errorf("expected positive MaxIterations, got %d", b.MaxIterations)
+	}
+	if b.WarnThreshold <= 0 || b.WarnThreshold >= 1 {
+		t.Errorf("expected WarnThreshold in (0,1), got %f", b.WarnThreshold)
+	}
+}
+
+func TestFailingTestTrend_Empty(t *testing.T) {
+	s := openTestStore(t)
+	sessionID, _ := s.CreateSession("", "main", "")
+	c := NewCollector(s, sessionID)
+
+	trend, err := c.FailingTestTrend(10)
+	if err != nil {
+		t.Fatalf("FailingTestTrend: %v", err)
+	}
+	if len(trend) != 0 {
+		t.Errorf("expected empty trend map, got %v", trend)
+	}
+}
+
+func TestFailingTestTrend_CountsRepeatFailures(t *testing.T) {
+	s := openTestStore(t)
+	sessionID, _ := s.CreateSession("", "main", "")
+	c := NewCollector(s, sessionID)
+
+	// Record two snapshots, each with TestA failing; only one with TestB failing.
+	for i, failedJSON := range []string{
+		`["TestA","TestB"]`,
+		`["TestA"]`,
+	} {
+		if err := c.RecordQuality(&store.QualitySnapshot{
+			Iteration:       i + 1,
+			OverallPass:     false,
+			TestTotal:       3,
+			TestFailed:      1,
+			FailedTestsJSON: failedJSON,
+		}); err != nil {
+			t.Fatalf("RecordQuality: %v", err)
+		}
+	}
+
+	trend, err := c.FailingTestTrend(10)
+	if err != nil {
+		t.Fatalf("FailingTestTrend: %v", err)
+	}
+	if trend["TestA"] != 2 {
+		t.Errorf("expected TestA count 2, got %d", trend["TestA"])
+	}
+	if trend["TestB"] != 1 {
+		t.Errorf("expected TestB count 1, got %d", trend["TestB"])
+	}
+}
