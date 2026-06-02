@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -1876,5 +1877,131 @@ func TestRun_InterruptMarksSessionInterrupted(t *testing.T) {
 	}
 	if sess.Status != "interrupted" {
 		t.Errorf("expected session status 'interrupted', got %q", sess.Status)
+	}
+}
+
+func TestSupervisorConfig(t *testing.T) {
+	dir := t.TempDir()
+	cfg := DefaultConfig()
+	cfg.WorkDir = dir
+	cfg.SprintSize = 7
+
+	sup, err := New(cfg, testLogger())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer sup.Store().Close()
+
+	got := sup.Config()
+	if got == nil {
+		t.Fatal("Config() returned nil")
+	}
+	if got.SprintSize != 7 {
+		t.Errorf("expected SprintSize 7, got %d", got.SprintSize)
+	}
+}
+
+func TestNewForResumeWithStore(t *testing.T) {
+	s, err := store.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+
+	sessionID, err := s.CreateSession("", "main", "")
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	if err := s.UpdateSessionStatus(sessionID, "interrupted"); err != nil {
+		t.Fatalf("UpdateSessionStatus: %v", err)
+	}
+
+	dir := t.TempDir()
+	sup, err := newForResumeWithStore(s, sessionID, dir, testLogger())
+	if err != nil {
+		t.Fatalf("newForResumeWithStore: %v", err)
+	}
+	defer sup.Store().Close()
+
+	if sup.SessionID() != sessionID {
+		t.Errorf("expected session ID %d, got %d", sessionID, sup.SessionID())
+	}
+	if sup.Config() == nil {
+		t.Error("expected non-nil config")
+	}
+}
+
+func TestNewForResumeWithStore_NonInterruptedSessionFails(t *testing.T) {
+	s, err := store.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer s.Close()
+
+	sessionID, err := s.CreateSession("", "main", "")
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	// Leave status as "pending" (the default).
+
+	_, err = newForResumeWithStore(s, sessionID, t.TempDir(), testLogger())
+	if err == nil {
+		t.Error("expected error when resuming non-interrupted session")
+	}
+}
+
+func TestFindResumableSession(t *testing.T) {
+	dir := t.TempDir()
+	agentboxDir := filepath.Join(dir, ".agentbox")
+	if err := os.MkdirAll(agentboxDir, 0755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+
+	// Create a real on-disk store with an interrupted session.
+	dbPath := filepath.Join(agentboxDir, "agentbox.db")
+	s, err := store.Open(dbPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	sessionID, err := s.CreateSession("", "main", "")
+	if err != nil {
+		s.Close()
+		t.Fatalf("CreateSession: %v", err)
+	}
+	if err := s.UpdateSessionStatus(sessionID, "interrupted"); err != nil {
+		s.Close()
+		t.Fatalf("UpdateSessionStatus: %v", err)
+	}
+	s.Close()
+
+	sess, err := FindResumableSession(dir)
+	if err != nil {
+		t.Fatalf("FindResumableSession: %v", err)
+	}
+	if sess.ID != sessionID {
+		t.Errorf("expected session ID %d, got %d", sessionID, sess.ID)
+	}
+	if sess.Status != "interrupted" {
+		t.Errorf("expected status 'interrupted', got %q", sess.Status)
+	}
+}
+
+func TestFindResumableSession_NoResumableSession(t *testing.T) {
+	dir := t.TempDir()
+	agentboxDir := filepath.Join(dir, ".agentbox")
+	if err := os.MkdirAll(agentboxDir, 0755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+
+	// Create an empty store with no interrupted sessions.
+	dbPath := filepath.Join(agentboxDir, "agentbox.db")
+	s, err := store.Open(dbPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	s.Close()
+
+	_, err = FindResumableSession(dir)
+	if err == nil {
+		t.Error("expected error when no resumable session exists")
 	}
 }
