@@ -6,7 +6,8 @@ Docker-sandboxed AI coding agent CLI written in Go. This file defines how we wor
 
 ```bash
 make build          # Build binary to bin/agentbox
-make test           # go test -v ./...
+make test           # go test -race -v ./...
+make ci             # lint + race-test + coverage ≥ 65% (mirrors hosted CI)
 make test-coverage  # Coverage report → coverage.html
 make lint           # golangci-lint run ./...
 make fmt            # go fmt + goimports
@@ -16,77 +17,17 @@ CI runs: build → lint → test (with `-race`) → coverage threshold (65% floo
 
 ## Development Workflow
 
-Follow the end-to-end process for every change. No exceptions.
+**See [`docs/workflow.md`](docs/workflow.md) — source of truth for the full
+ticket workflow**, including the per-PR checklist, self-merge authority,
+cleanup steps, and branch/commit naming conventions.
 
-### 1. Worktree + Branch
-
-Always work in an isolated worktree off `main`:
-
-```bash
-git fetch origin main
-git worktree add ../TICKET-XXX-description -b feat/TICKET-XXX-description origin/main
-cd ../TICKET-XXX-description
-```
-
-Branch prefixes: `feat/`, `fix/`, `refactor/`, `test/`, `docs/`, `chore/`.
-
-### 2. Research + Clarify
-
-Read the relevant code before writing anything. Break the task into testable units. Surface ambiguities early. Don't start coding until you know what "done" looks like.
-
-### 3. TDD Loop (Red → Green → Refactor)
-
-Every unit of work follows this cycle:
+Quick reference for local CI parity (mirrors hosted CI — all must pass):
 
 ```bash
-# Write failing test → commit
-go test -v -run TestMyNewThing ./internal/mypkg/
-git commit -m "test(mypkg): add failing test for new thing"
-
-# Make it pass → commit
-go test -v -run TestMyNewThing ./internal/mypkg/
-git commit -m "feat(mypkg): implement new thing"
-
-# Refactor if needed → commit
-go test -v ./internal/mypkg/
-git commit -m "refactor(mypkg): extract helper from new thing"
-```
-
-Build up from unit tests to integration tests as units come together.
-
-### 4. Quality Checks
-
-All must pass before requesting review:
-
-```bash
-make fmt            # Format code (goimports + go fmt)
-make lint           # No lint errors (includes format checks)
-make test           # All tests pass
-```
-
-CI also runs with `-race` — if you suspect concurrency issues, test locally with `go test -race ./...`.
-
-Do not skip or disable checks.
-
-### 5. Code Review
-
-Get review **before** opening a PR. Address critical/significant issues immediately. Minor issues can go in a follow-up.
-
-### 6. Open PR
-
-```bash
-git push -u origin feat/TICKET-XXX-description
-gh pr create --title "feat(scope): short description" --body "..."
-```
-
-### 7. Verify CI → Squash Merge → Clean Up
-
-Wait for green CI. Squash merge to `main`. Remove the worktree:
-
-```bash
-git fetch origin
-git worktree remove ../TICKET-XXX-description
-git branch -d feat/TICKET-XXX-description
+make fmt       # format check (goimports + go fmt)
+make lint      # golangci-lint
+make test      # go test -race ./... + coverage ≥ 65%
+make build     # binary build smoke test
 ```
 
 ## Commit Conventions
