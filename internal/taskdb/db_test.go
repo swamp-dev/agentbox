@@ -459,3 +459,32 @@ func TestTaskFailureHistory(t *testing.T) {
 		t.Errorf("expected 2 failures, got %d", len(failures))
 	}
 }
+
+func TestLastAttempt_NoAttempts(t *testing.T) {
+	task := &Task{ID: "t-1", Title: "Empty", Status: StatusPending}
+	if got := task.LastAttempt(); got != nil {
+		t.Errorf("expected nil for task with no attempts, got %v", got)
+	}
+}
+
+func TestLastAttempt_ReturnsLatest(t *testing.T) {
+	task := &Task{
+		ID:    "t-1",
+		Title: "Test",
+		Attempts: []Attempt{
+			{Number: 1, Success: false, ErrorMsg: "first failure"},
+			{Number: 2, Success: true, ErrorMsg: ""},
+		},
+	}
+
+	last := task.LastAttempt()
+	if last == nil {
+		t.Fatal("expected non-nil last attempt")
+	}
+	if last.Number != 2 {
+		t.Errorf("expected attempt number 2, got %d", last.Number)
+	}
+	if !last.Success {
+		t.Error("expected last attempt to be successful")
+	}
+}

@@ -526,6 +526,25 @@ func TestWriteEscalation_DefaultMethodIsFile(t *testing.T) {
 	}
 }
 
+func TestExecCommandExecutor_Success(t *testing.T) {
+	exec := &execCommandExecutor{}
+	out, err := exec.Execute(context.Background(), "", "git", "version")
+	if err != nil {
+		t.Fatalf("Execute(git version): %v", err)
+	}
+	if !strings.Contains(out, "git version") {
+		t.Errorf("expected 'git version' in output, got %q", out)
+	}
+}
+
+func TestExecCommandExecutor_Failure(t *testing.T) {
+	exec := &execCommandExecutor{}
+	_, err := exec.Execute(context.Background(), "", "git", "invalid-subcommand-xyz")
+	if err == nil {
+		t.Error("expected error for invalid git subcommand")
+	}
+}
+
 func TestTruncate(t *testing.T) {
 	tests := []struct {
 		name   string

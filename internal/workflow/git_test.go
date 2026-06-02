@@ -624,3 +624,47 @@ func TestWorkDir_WithoutWorktree(t *testing.T) {
 		t.Errorf("expected workDir to return repo dir %q, got %q", expected, wd)
 	}
 }
+
+func TestSetWorktreePath(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+	gw := NewGitWorkflow("", t.TempDir(), logger)
+
+	if gw.WorktreePath() != "" {
+		t.Error("expected empty WorktreePath before SetWorktreePath")
+	}
+
+	wantPath := "/nonexistent/worktree-path"
+	gw.SetWorktreePath(wantPath, "feat/my-branch")
+
+	if gw.WorktreePath() != wantPath {
+		t.Errorf("expected %q, got %q", wantPath, gw.WorktreePath())
+	}
+	if gw.BranchName() != "feat/my-branch" {
+		t.Errorf("expected feat/my-branch, got %q", gw.BranchName())
+	}
+}
+
+func TestCmdOutput_Success(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+	gw := NewGitWorkflow("", t.TempDir(), logger)
+
+	ctx := context.Background()
+	out, err := gw.cmdOutput(ctx, t.TempDir(), "git", "version")
+	if err != nil {
+		t.Fatalf("cmdOutput(git version): %v", err)
+	}
+	if !strings.Contains(out, "git version") {
+		t.Errorf("expected 'git version' in output, got %q", out)
+	}
+}
+
+func TestCmdOutput_Failure(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+	gw := NewGitWorkflow("", t.TempDir(), logger)
+
+	ctx := context.Background()
+	_, err := gw.cmdOutput(ctx, t.TempDir(), "git", "invalid-subcommand-that-does-not-exist")
+	if err == nil {
+		t.Error("expected error for invalid git subcommand")
+	}
+}

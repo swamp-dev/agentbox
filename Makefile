@@ -1,4 +1,4 @@
-.PHONY: build test test-unit test-integration test-coverage clean install lint fmt smoke docker-build help
+.PHONY: build test test-unit test-integration test-coverage clean install lint fmt smoke docker-build mutation help
 
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
 COMMIT ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo "none")
@@ -48,6 +48,12 @@ fmt: ## Format code
 smoke: build ## Smoke test: run help and version commands
 	bin/agentbox --help
 	bin/agentbox version
+
+mutation: ## Run mutation testing on core packages (slow — ~5 min per package; requires gremlins)
+	@command -v gremlins >/dev/null 2>&1 || { echo "gremlins not installed. Run: go install github.com/go-gremlins/gremlins/cmd/gremlins@latest"; exit 1; }
+	gremlins unleash --coverpkg ./internal/ralph/... ./internal/ralph/
+	gremlins unleash --coverpkg ./internal/supervisor/... ./internal/supervisor/
+	gremlins unleash --coverpkg ./internal/store/... ./internal/store/
 
 clean: ## Clean build artifacts
 	rm -rf bin/
