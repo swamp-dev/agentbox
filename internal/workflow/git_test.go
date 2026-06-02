@@ -633,10 +633,11 @@ func TestSetWorktreePath(t *testing.T) {
 		t.Error("expected empty WorktreePath before SetWorktreePath")
 	}
 
-	gw.SetWorktreePath("/tmp/myworktree", "feat/my-branch")
+	wantPath := "/nonexistent/worktree-path"
+	gw.SetWorktreePath(wantPath, "feat/my-branch")
 
-	if gw.WorktreePath() != "/tmp/myworktree" {
-		t.Errorf("expected /tmp/myworktree, got %q", gw.WorktreePath())
+	if gw.WorktreePath() != wantPath {
+		t.Errorf("expected %q, got %q", wantPath, gw.WorktreePath())
 	}
 	if gw.BranchName() != "feat/my-branch" {
 		t.Errorf("expected feat/my-branch, got %q", gw.BranchName())

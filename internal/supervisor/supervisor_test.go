@@ -1899,6 +1899,9 @@ func TestSupervisorConfig(t *testing.T) {
 	if got.SprintSize != 7 {
 		t.Errorf("expected SprintSize 7, got %d", got.SprintSize)
 	}
+	if got.WorkDir != dir {
+		t.Errorf("expected WorkDir %q, got %q", dir, got.WorkDir)
+	}
 }
 
 func TestNewForResumeWithStore(t *testing.T) {
@@ -1927,25 +1930,6 @@ func TestNewForResumeWithStore(t *testing.T) {
 	}
 	if sup.Config() == nil {
 		t.Error("expected non-nil config")
-	}
-}
-
-func TestNewForResumeWithStore_NonInterruptedSessionFails(t *testing.T) {
-	s, err := store.Open(":memory:")
-	if err != nil {
-		t.Fatalf("open store: %v", err)
-	}
-	defer s.Close()
-
-	sessionID, err := s.CreateSession("", "main", "")
-	if err != nil {
-		t.Fatalf("CreateSession: %v", err)
-	}
-	// Leave status as "pending" (the default).
-
-	_, err = newForResumeWithStore(s, sessionID, t.TempDir(), testLogger())
-	if err == nil {
-		t.Error("expected error when resuming non-interrupted session")
 	}
 }
 

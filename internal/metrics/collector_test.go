@@ -212,7 +212,10 @@ func TestDefaultBudget(t *testing.T) {
 
 func TestFailingTestTrend_Empty(t *testing.T) {
 	s := openTestStore(t)
-	sessionID, _ := s.CreateSession("", "main", "")
+	sessionID, err := s.CreateSession("", "main", "")
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
 	c := NewCollector(s, sessionID)
 
 	trend, err := c.FailingTestTrend(10)
@@ -226,7 +229,10 @@ func TestFailingTestTrend_Empty(t *testing.T) {
 
 func TestFailingTestTrend_CountsRepeatFailures(t *testing.T) {
 	s := openTestStore(t)
-	sessionID, _ := s.CreateSession("", "main", "")
+	sessionID, err := s.CreateSession("", "main", "")
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
 	c := NewCollector(s, sessionID)
 
 	// Record two snapshots, each with TestA failing; only one with TestB failing.
