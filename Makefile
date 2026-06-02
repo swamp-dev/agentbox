@@ -14,20 +14,29 @@ build: ## Build the agentbox binary
 install: build ## Install agentbox to $GOPATH/bin
 	go install $(LDFLAGS) ./cmd/agentbox
 
-test: ## Run tests
-	go test -v ./...
+test: ## Run tests with race detector
+	go test -race -v ./...
 
 test-unit: ## Run unit tests only (no Docker required)
-	go test -short -v ./...
+	go test -race -short -v ./...
 
 test-integration: ## Run integration tests (requires Docker)
-	go test -v -run 'TestRun|TestContainer' ./internal/container/
+	go test -race -v -run 'TestRun|TestContainer' ./internal/container/
 
-test-coverage: ## Run tests with coverage report
-	go test -coverprofile=coverage.out ./...
+test-coverage: ## Run tests with race detector and coverage report
+	go test -race -coverprofile=coverage.out ./...
 	go tool cover -html=coverage.out -o coverage.html
 	@echo "Coverage report: coverage.html"
 	@go tool cover -func=coverage.out | grep total
+
+ci: ## Run full CI suite locally (mirrors GitHub Actions: lint + race-test + coverage ≥ 65%)
+	@$(MAKE) lint
+	go test -race -coverprofile=coverage.out ./...
+	@COVERAGE=$$(go tool cover -func=coverage.out | grep total | awk '{print $$3}' | sed 's/%//'); \
+	echo "Coverage: $${COVERAGE}%"; \
+	if [ "$$(awk "BEGIN {print ($${COVERAGE} < 65)}")" -eq 1 ]; then \
+	  echo "Coverage $${COVERAGE}% is below 65% threshold"; exit 1; \
+	fi
 
 lint: ## Run linters
 	golangci-lint run ./...
